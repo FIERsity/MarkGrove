@@ -2,6 +2,18 @@ export type Language = "zh" | "en";
 export type Theme = "light" | "dark";
 export type ViewMode = "edit" | "split" | "preview";
 
+export const ROOT_FOLDER_ID = "root";
+
+export interface FolderRecord {
+  id: string;
+  parentId: string;
+  name: string;
+  orderKey: string;
+  createdAt: number;
+  updatedAt: number;
+  trashedAt: number | null;
+}
+
 export interface NoteRecord {
   id: string;
   title: string;
@@ -14,6 +26,9 @@ export interface NoteRecord {
   snapshotAt: number;
   pinned: boolean;
   trashedAt: number | null;
+  parentId: string;
+  orderKey: string;
+  lastOpenedAt: number | null;
 }
 
 export interface RevisionRecord {
@@ -40,6 +55,16 @@ export interface NoteDraft {
 
 export interface BackupPreview {
   notes: NoteRecord[];
+  folders: FolderRecord[];
   conflicts: number;
   exportedAt: string;
+}
+
+export type WorkspaceItemKind = "folder" | "note";
+
+export interface ItemLocation {
+  kind: WorkspaceItemKind;
+  id: string;
+  parentId: string;
+  orderKey: string;
 }

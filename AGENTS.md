@@ -34,8 +34,9 @@ MarkGrove 是独立版本控制、部署到 GitHub Pages 的本地优先 Markdow
 
 - 运行时：Node.js >=24，React 19、TypeScript、Vite 8。
 - 编辑与预览：CodeMirror 6；`react-markdown`/remark-gfm；raw HTML 跳过，图片渲染为本地隐私占位。
-- 持久化：Dexie/IndexedDB `markgrove`，当前 schema v2；`notes`、`revisions`、`settings` 三表。
-- 备份：ZIP 格式 `markgrove-backup` v1；单篇 Markdown 8 MiB、恢复包 50 MiB、5,000 篇上限。
+- 持久化：Dexie/IndexedDB `markgrove`，当前 schema v3；`notes`、`folders`、`revisions`、`settings` 四表；v1/v2 原地迁移到根目录并保留旧修订。
+- 工作区：文件夹与笔记统一稀疏排序；同一移动命令供指针拖动、键盘移动和对话框使用；文件夹禁止移入自身或后代。
+- 备份：ZIP 格式 `markgrove-backup` 当前写出 v2，并显式读取 v1/v2；单篇 Markdown 8 MiB、恢复包 50 MiB、5,000 篇上限。
 - PWA：`registerType: "prompt"`；Workbox `runtimeCaching: []`，只预缓存应用 shell。
 - 最低验证：`npm run check`，等价于 test + lint + build；文件与 PWA 改动另做桌面浏览器检查。
 - 发布：`main` 经 `.github/workflows/pages.yml` 验证后发布 `dist/` 到 GitHub Pages；`dist/` 不追踪。

@@ -6,6 +6,7 @@ function note(overrides: Partial<NoteRecord>): NoteRecord {
   return {
     id: "a", title: "Alpha", content: "first idea", tags: [], frontmatter: {},
     createdAt: 1, updatedAt: 1, revision: 0, snapshotAt: 0, pinned: false, trashedAt: null,
+    parentId: "root", orderKey: "00000000000001000000", lastOpenedAt: null,
     ...overrides,
   };
 }
