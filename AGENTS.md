@@ -33,7 +33,8 @@ MarkGrove 是独立版本控制、部署到 GitHub Pages 的本地优先 Markdow
 <!-- AGENT-MAINTAINED:START facts -->
 
 - 运行时：Node.js >=24，React 19、TypeScript、Vite 8。
-- 编辑与预览：CodeMirror 6；`react-markdown`/remark-gfm；raw HTML 跳过，图片渲染为本地隐私占位。
+- 编辑与预览：CodeMirror 6 + Lezer GFM 语法树提供默认可编辑 Live Preview；源码/实时预览共用编辑状态，`react-markdown`/remark-gfm 只负责独立阅读与分栏视图；raw HTML 跳过，图片渲染为本地隐私占位。
+- 编辑模式：当前键 `editorViewMode` 支持 `live`、`source`、`reading`、`split`；旧 `viewMode` 的 edit/split/preview 分别迁移为 source/live/live，不涉及 IndexedDB schema 变化。
 - 持久化：Dexie/IndexedDB `markgrove`，当前 schema v3；`notes`、`folders`、`revisions`、`settings` 四表；v1/v2 原地迁移到根目录并保留旧修订。
 - 工作区：文件夹与笔记统一稀疏排序；同一移动命令供指针拖动、键盘移动和对话框使用；文件夹禁止移入自身或后代。
 - 备份：ZIP 格式 `markgrove-backup` 当前写出 v2，并显式读取 v1/v2；单篇 Markdown 8 MiB、恢复包 50 MiB、5,000 篇上限。

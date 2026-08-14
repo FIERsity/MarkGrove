@@ -3,15 +3,20 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { markdown } from "@codemirror/lang-markdown";
 import { bracketMatching, defaultHighlightStyle, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import { searchKeymap } from "@codemirror/search";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { drawSelection, dropCursor, EditorView, highlightActiveLine, highlightSpecialChars, keymap, lineNumbers } from "@codemirror/view";
-import type { Theme } from "../types";
+import { GFM } from "@lezer/markdown";
+import type { EditorAppearance, Language, Theme } from "../types";
+import { livePreviewExtension } from "./livePreviewExtension";
 
 interface Props {
   value: string;
   onChange: (value: string) => void;
   theme: Theme;
   label: string;
+  appearance: EditorAppearance;
+  language: Language;
+  visible: boolean;
 }
 
 const darkEditor = EditorView.theme({
@@ -33,15 +38,22 @@ const lightEditor = EditorView.theme({
   "&.cm-focused .cm-selectionBackground, ::selection": { backgroundColor: "#bfd4c5aa" },
 });
 
-export function MarkdownEditor({ value, onChange, theme, label }: Props) {
+function appearanceExtensions(appearance: EditorAppearance, language: Language): Extension {
+  return appearance === "live" ? livePreviewExtension(language) : [lineNumbers(), highlightActiveLine()];
+}
+
+export function MarkdownEditor({ value, onChange, theme, label, appearance, language, visible }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const themeCompartment = useRef(new Compartment());
   const labelCompartment = useRef(new Compartment());
+  const appearanceCompartment = useRef(new Compartment());
   const initialValueRef = useRef(value);
   const initialThemeRef = useRef(theme);
   const initialLabelRef = useRef(label);
+  const initialAppearanceRef = useRef(appearance);
+  const initialLanguageRef = useRef(language);
   onChangeRef.current = onChange;
 
   useEffect(() => {
@@ -49,15 +61,16 @@ export function MarkdownEditor({ value, onChange, theme, label }: Props) {
     const state = EditorState.create({
       doc: initialValueRef.current,
       extensions: [
-        lineNumbers(), highlightSpecialChars(), history(), drawSelection(), dropCursor(),
-        indentOnInput(), bracketMatching(), highlightActiveLine(), EditorView.lineWrapping,
-        markdown(), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        highlightSpecialChars(), history(), drawSelection(), dropCursor(),
+        indentOnInput(), bracketMatching(), EditorView.lineWrapping,
+        markdown({ extensions: [GFM] }), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
         labelCompartment.current.of(EditorView.contentAttributes.of({ "aria-label": initialLabelRef.current, spellcheck: "true" })),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
         }),
         themeCompartment.current.of(initialThemeRef.current === "dark" ? darkEditor : lightEditor),
+        appearanceCompartment.current.of(appearanceExtensions(initialAppearanceRef.current, initialLanguageRef.current)),
       ],
     });
     const view = new EditorView({ state, parent: hostRef.current });
@@ -86,5 +99,15 @@ export function MarkdownEditor({ value, onChange, theme, label }: Props) {
     });
   }, [label]);
 
-  return <div className="editor-host" ref={hostRef} />;
+  useEffect(() => {
+    viewRef.current?.dispatch({
+      effects: appearanceCompartment.current.reconfigure(appearanceExtensions(appearance, language)),
+    });
+  }, [appearance, language]);
+
+  useEffect(() => {
+    if (visible) viewRef.current?.requestMeasure();
+  }, [visible]);
+
+  return <div className={`editor-host appearance-${appearance}`} ref={hostRef} />;
 }

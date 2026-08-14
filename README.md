@@ -10,7 +10,8 @@ MarkGrove 是一个无需账号、本地优先、可离线使用的 Markdown 网
 - Inbox、最近、收藏、全部笔记、标签与回收站组成轻量导航，不强迫用户先整理再写作。
 - 鼠标拖动和键盘移动使用同一套排序规则；可放到目标前后或文件夹内部，结构操作可在当前会话撤销。
 - `⌘/Ctrl K` 快速打开笔记或文件夹；侧栏可调宽、可折叠，并记住宽度。
-- CodeMirror Markdown 源码编辑器与安全 GFM 实时预览。
+- 默认使用可直接编辑的 Live Preview：非活动内容呈现阅读排版，光标进入时显露 Markdown；同时保留源码、阅读与分栏校对。
+- 标题、强调、链接、引用、列表、代码和任务框都在同一个 CodeMirror 编辑状态中工作，切换视图不丢光标或撤销历史。
 - 650ms 防抖自动保存；同一笔记的写入串行执行，持续写作时定期保留最近 20 个本地快照。
 - 导入 `.md`、`.markdown`、`.txt`；导出标准 Markdown 与 YAML frontmatter。
 - 整库版本化 ZIP 备份会保留文件夹、顺序和笔记归属；ID 冲突会作为完整副本导入，不静默覆盖。
@@ -43,7 +44,7 @@ npm run check
 - 整库备份包含 `manifest.json` 与 `notes/*.md`，当前写出格式为 v2；恢复器继续显式兼容 v1。
 - 单个 Markdown 文件上限 8 MiB，整库恢复包上限 50 MiB、最多 5,000 篇笔记。
 
-v0.2 的交互原则、数据模型和验收标准见 [`docs/workspace-v0.2-spec.md`](docs/workspace-v0.2-spec.md)。
+详细规范：[`v0.2 工作区`](docs/workspace-v0.2-spec.md) · [`v0.3 实时预览`](docs/live-preview-v0.3-spec.md)。
 
 ## 发布
 
@@ -57,6 +58,6 @@ v0.2 的交互原则、数据模型和验收标准见 [`docs/workspace-v0.2-spec
 
 MarkGrove is a private, local-first Markdown notebook that lives in your browser. It needs no account, works offline, and keeps note text, titles, tags, search data, and revision snapshots in local IndexedDB.
 
-It includes a unified folder-and-note tree, pointer and keyboard reordering, quick open, CodeMirror editing, safe GFM preview, autosave, trash and restore, Markdown import/export, versioned ZIP backups, bilingual UI, themes, and an installable PWA shell.
+It includes a unified folder-and-note tree, pointer and keyboard reordering, quick open, an editable Live Preview backed by CodeMirror, source and reading views, autosave, trash and restore, Markdown import/export, versioned ZIP backups, bilingual UI, themes, and an installable PWA shell.
 
 Browser storage is not a backup. Export a ZIP regularly if the notes matter.

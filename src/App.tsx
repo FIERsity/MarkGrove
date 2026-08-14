@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArchiveRestore, BookOpenText, Check, ChevronDown, ChevronRight, Clock3, Download,
+  ArchiveRestore, BookOpenText, Check, ChevronDown, ChevronRight, Clock3, Columns2, Download,
   FileDown, FileUp, FolderOpen, FolderPlus, HardDrive, Languages, Menu, Moon,
   MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, RotateCcw,
   Search, Settings, Sun, Tag, Trash2, Upload, Wifi, WifiOff,
@@ -11,6 +11,7 @@ import { MoveDialog } from "./components/MoveDialog";
 import { QuickOpenDialog } from "./components/QuickOpenDialog";
 import { WorkspaceTree, type TreeMoveRequest } from "./components/WorkspaceTree";
 import { createBackup, downloadBlob, inspectBackup } from "./lib/backup";
+import { normalizeViewMode } from "./lib/editorMode";
 import { message, type MessageKey } from "./lib/i18n";
 import { countCharacters, MAX_MARKDOWN_BYTES, parseMarkdown, safeFilename, serializeMarkdown } from "./lib/markdown";
 import { collectTags } from "./lib/search";
@@ -27,7 +28,7 @@ import {
 } from "./lib/workspace";
 import {
   ROOT_FOLDER_ID,
-  type BackupPreview, type FolderRecord, type Language, type NoteDraft, type NoteRecord,
+  type BackupPreview, type EditorAppearance, type FolderRecord, type Language, type NoteDraft, type NoteRecord,
   type RevisionRecord, type Theme, type ViewMode, type WorkspaceItemKind,
 } from "./types";
 
@@ -38,8 +39,8 @@ type ToastState = { id: number; message: string; undo?: () => Promise<void> };
 const MarkdownEditor = lazy(() => import("./components/MarkdownEditor").then((module) => ({ default: module.MarkdownEditor })));
 const MarkdownPreview = lazy(() => import("./components/MarkdownPreview").then((module) => ({ default: module.MarkdownPreview })));
 
-const STARTER_ZH = `# 欢迎来到 MarkGrove\n\n这里是一片只属于你的 Markdown 小树林。笔记保存在当前浏览器中，不需要账号，也不会上传正文。\n\n## 从这里开始\n\n- 在左侧新建文件夹或笔记\n- 拖动树节点整理位置，也可以使用“移动到…”\n- 使用 **Markdown** 写作，在右侧查看预览\n- 定期下载可恢复的 ZIP 备份\n\n> 浏览器存储不是备份。重要笔记请主动导出。`;
-const STARTER_EN = `# Welcome to MarkGrove\n\nThis is your private Markdown grove. Notes stay in this browser—no account and no document uploads.\n\n## Start here\n\n- Create folders and notes in the sidebar\n- Organize the tree by dragging or with “Move to…”\n- Write in **Markdown** and preview on the right\n- Download a restorable ZIP regularly\n\n> Browser storage is not a backup. Export important notes regularly.`;
+const STARTER_ZH = `# 欢迎来到 MarkGrove\n\n这里是一片只属于你的 Markdown 小树林。笔记保存在当前浏览器中，不需要账号，也不会上传正文。\n\n## 从这里开始\n\n- 在左侧新建文件夹或笔记\n- 拖动树节点整理位置，也可以使用“移动到…”\n- 直接在 **实时预览** 中写作，光标进入时会显露 Markdown\n- 定期下载可恢复的 ZIP 备份\n\n> 浏览器存储不是备份。重要笔记请主动导出。`;
+const STARTER_EN = `# Welcome to MarkGrove\n\nThis is your private Markdown grove. Notes stay in this browser—no account and no document uploads.\n\n## Start here\n\n- Create folders and notes in the sidebar\n- Organize the tree by dragging or with “Move to…”\n- Write directly in **Live Preview**; Markdown appears where you place the cursor\n- Download a restorable ZIP regularly\n\n> Browser storage is not a backup. Export important notes regularly.`;
 
 function preferredLanguage(): Language { return navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en"; }
 function dateLabel(timestamp: number, language: Language): string {
@@ -54,7 +55,7 @@ export default function App() {
   const [draft, setDraft] = useState<NoteDraft | null>(null);
   const [navigation, setNavigation] = useState<NavigationTarget>({ kind: "all" });
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const [viewMode, setViewMode] = useState<ViewMode>("split");
+  const [viewMode, setViewMode] = useState<ViewMode>("live");
   const [language, setLanguage] = useState<Language>(preferredLanguage());
   const [theme, setTheme] = useState<Theme>("light");
   const [saveState, setSaveState] = useState<SaveState>("saved");
@@ -83,6 +84,8 @@ export default function App() {
   const markdownInputRef = useRef<HTMLInputElement>(null);
   const backupInputRef = useRef<HTMLInputElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const writingAreaRef = useRef<HTMLDivElement>(null);
+  const lastEditingModeRef = useRef<EditorAppearance>("live");
   const t = useCallback((key: MessageKey, values?: Record<string, string | number>) => message(language, key, values), [language]);
 
   const reloadWorkspace = useCallback(async () => {
@@ -95,16 +98,24 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [storedLanguage, storedTheme, storedView, storedBackup, storedExpanded, storedWidth, storedCollapsed] = await Promise.all([
+      const [storedLanguage, storedTheme, storedView, legacyView, storedEditingMode, storedBackup, storedExpanded, storedWidth, storedCollapsed] = await Promise.all([
         getSetting<Language>("language", preferredLanguage()), getSetting<Theme>("theme", "light"),
-        getSetting<ViewMode>("viewMode", "split"), getSetting<number | null>("lastBackup", null),
+        getSetting<unknown>("editorViewMode", null), getSetting<unknown>("viewMode", null),
+        getSetting<EditorAppearance>("lastEditingMode", "live"),
+        getSetting<number | null>("lastBackup", null),
         getSetting<string[]>("expandedFolderIds", []), getSetting<number>("sidebarWidth", 304),
         getSetting<boolean>("sidebarCollapsed", false),
       ]);
+      const normalizedView = normalizeViewMode(storedView, legacyView);
+      lastEditingModeRef.current = normalizedView === "source" || normalizedView === "live"
+        ? normalizedView
+        : storedEditingMode === "source" ? "source" : "live";
+      await setSetting("editorViewMode", normalizedView);
+      await setSetting("lastEditingMode", lastEditingModeRef.current);
       await ensureStarterNote(storedLanguage === "zh" ? "欢迎来到 MarkGrove" : "Welcome to MarkGrove", storedLanguage === "zh" ? STARTER_ZH : STARTER_EN);
       const records = await listWorkspace();
       if (cancelled) return;
-      setLanguage(storedLanguage); setTheme(storedTheme); setViewMode(storedView); setLastBackup(storedBackup);
+      setLanguage(storedLanguage); setTheme(storedTheme); setViewMode(normalizedView); setLastBackup(storedBackup);
       setExpandedIds(new Set(storedExpanded)); setSidebarWidth(Math.max(240, Math.min(420, storedWidth))); setSidebarCollapsed(storedCollapsed);
       setNotes(records.notes); setFolders(records.folders);
       const first = records.notes.filter((note) => note.trashedAt === null)
@@ -116,6 +127,28 @@ export default function App() {
   }, []);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; document.documentElement.lang = language === "zh" ? "zh-CN" : "en"; }, [language, theme]);
+  useEffect(() => {
+    const toggleReading = (event: KeyboardEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const isMacLike = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+      const modifier = event.metaKey || (!isMacLike && event.ctrlKey);
+      if (!modifier || event.shiftKey || event.altKey || event.key.toLowerCase() !== "e" || target?.closest("input, textarea, select")) return;
+      event.preventDefault();
+      setViewMode((current) => {
+        const next: ViewMode = current === "reading" ? lastEditingModeRef.current : "reading";
+        void setSetting("editorViewMode", next);
+        window.requestAnimationFrame(() => {
+          const destination = next === "reading"
+            ? writingAreaRef.current?.querySelector<HTMLElement>(".preview-pane")
+            : writingAreaRef.current?.querySelector<HTMLElement>(".cm-content");
+          destination?.focus({ preventScroll: true });
+        });
+        return next;
+      });
+    };
+    window.addEventListener("keydown", toggleReading);
+    return () => window.removeEventListener("keydown", toggleReading);
+  }, []);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast((current) => current?.id === toast.id ? null : current), 10_000);
@@ -332,7 +365,13 @@ export default function App() {
     const restored = await restoreRevision(revision); const next = asDraft(restored);
     draftRef.current = next; setDraft(next); setSelectedNoteId(restored.id); await reloadWorkspace(); setHistoryOpen(false);
   }
-  async function changeView(next: ViewMode) { setViewMode(next); await setSetting("viewMode", next); }
+  async function changeView(next: ViewMode) {
+    setViewMode(next);
+    if (next === "live" || next === "source") {
+      lastEditingModeRef.current = next;
+      await Promise.all([setSetting("editorViewMode", next), setSetting("lastEditingMode", next)]);
+    } else await setSetting("editorViewMode", next);
+  }
   async function changeLanguage(next: Language) { setLanguage(next); await setSetting("language", next); }
   async function changeTheme(next: Theme) { setTheme(next); await setSetting("theme", next); }
   function changeExpanded(next: Set<string>) { setExpandedIds(next); void setSetting("expandedFolderIds", [...next]); }
@@ -413,22 +452,23 @@ export default function App() {
               <input ref={titleInputRef} className="note-title-input" value={draft.title} onChange={(event) => updateDraft({ title: event.target.value })} aria-label={language === "zh" ? "笔记标题" : "Note title"} />
               <label className="tag-input"><Tag size={13} /><input value={draft.tags.join(", ")} onChange={(event) => updateDraft({ tags: event.target.value.split(/[,，]/) })} placeholder={t("addTags")} /></label>
             </div>
-            <div className="note-tools"><div className="view-switcher">{(["edit", "split", "preview"] as const).map((mode) => <button type="button" key={mode} className={viewMode === mode ? "active" : ""} onClick={() => void changeView(mode)}>{t(mode)}</button>)}</div>
+            <div className="note-tools"><div className="view-switcher">{(["live", "source", "reading"] as const).map((mode) => <button type="button" key={mode} aria-pressed={viewMode === mode} title={mode === "reading" ? (language === "zh" ? "切换阅读视图（⌘/Ctrl E）" : "Toggle reading view (⌘/Ctrl E)") : undefined} className={viewMode === mode ? "active" : ""} onClick={() => void changeView(mode)}>{t(mode)}</button>)}</div>
               <details className="menu-details note-menu"><summary className="icon-button" aria-label={t("more")}><Menu size={18} /><ChevronDown size={12} /></summary><div className="dropdown-menu align-right" onClickCapture={(event) => { const details = event.currentTarget.closest("details"); if (details) details.open = false; }}>
                 <button type="button" onClick={() => void setPinned(activeNote.id, !activeNote.pinned).then(reloadWorkspace)}>{activeNote.pinned ? <PinOff size={16} /> : <Pin size={16} />}{t(activeNote.pinned ? "unpin" : "pin")}</button>
                 <button type="button" onClick={async () => { await flushDraft(); const fresh = (await listWorkspace()).notes.find((note) => note.id === activeNote.id); if (fresh) { await duplicateNote(fresh, language === "zh" ? "副本" : "copy"); await reloadWorkspace(); } }}><FileDown size={16} />{t("duplicate")}</button>
                 <button type="button" onClick={() => setMoveTarget({ kind: "note", id: activeNote.id })}>{t("moveTo")}</button>
+                <button type="button" onClick={() => void changeView("split")}><Columns2 size={16} />{t("split")}</button>
                 <button type="button" onClick={handleExportNote}><Download size={16} />{t("exportMarkdown")}</button>
                 <button type="button" onClick={() => void openHistory()}><Clock3 size={16} />{t("history")}</button>
                 <button type="button" className="danger" onClick={() => void handleTrash("note", activeNote.id)}><Trash2 size={16} />{t("moveToTrash")}</button>
               </div></details>
             </div>
           </header>
-          <div className={`writing-area mode-${viewMode}`}>
-            {viewMode !== "preview" && <section className="editor-pane" aria-label={t("edit")}><Suspense fallback={<div className="pane-loading">Markdown…</div>}><MarkdownEditor value={draft.content} onChange={(content) => updateDraft({ content })} theme={theme} label={language === "zh" ? "Markdown 编辑器" : "Markdown editor"} /></Suspense></section>}
-            {viewMode !== "edit" && <section className="preview-pane" aria-label={t("preview")}><Suspense fallback={<div className="pane-loading">Preview…</div>}><MarkdownPreview content={draft.content} language={language} /></Suspense></section>}
+          <div ref={writingAreaRef} className={`writing-area mode-${viewMode}`}>
+            <section className="editor-pane" aria-label={t(viewMode === "source" || viewMode === "split" ? "source" : "live")} aria-hidden={viewMode === "reading"}><Suspense fallback={<div className="pane-loading">Markdown…</div>}><MarkdownEditor key={draft.id} value={draft.content} onChange={(content) => updateDraft({ content })} theme={theme} appearance={viewMode === "source" || viewMode === "split" ? "source" : "live"} language={language} visible={viewMode !== "reading"} label={language === "zh" ? (viewMode === "source" || viewMode === "split" ? "Markdown 源码编辑器" : "Markdown 实时预览编辑器") : (viewMode === "source" || viewMode === "split" ? "Markdown source editor" : "Markdown live preview editor")} /></Suspense></section>
+            {(viewMode === "reading" || viewMode === "split") && <section className="preview-pane" tabIndex={-1} aria-label={t("reading")}><Suspense fallback={<div className="pane-loading">Preview…</div>}><MarkdownPreview content={draft.content} language={language} /></Suspense></section>}
           </div>
-          <footer className="note-status"><span>Markdown · GFM</span><span>{countCharacters(draft.content)} {t("words")}</span><span>v{activeNote.revision}</span></footer>
+          <footer className="note-status"><span>Markdown · GFM · {t(viewMode)}</span><span>{countCharacters(draft.content)} {t("words")}</span><span>v{activeNote.revision}</span></footer>
         </section> : <LibraryOverview title={navigationTitle()} navigation={navigation} notes={overviewNotes} allNotes={notes} folders={folders} language={language} onOpenNote={(id) => void openNote(id)} onOpenFolder={(id) => void navigate({ kind: "folder", folderId: id })} onNewNote={() => void handleNewNote()} onRestoreNote={(id) => void restoreTrashedNote(id)} onRestoreFolder={(id) => void restoreTrashedFolder(id)} onDeleteNote={(id) => void deleteNote(id)} onDeleteFolder={(id) => void deleteFolder(id)} />}
       </main>
 

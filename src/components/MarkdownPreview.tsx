@@ -3,20 +3,11 @@ import remarkGfm from "remark-gfm";
 import { ImageOff } from "lucide-react";
 import type { Language } from "../types";
 import { message } from "../lib/i18n";
+import { safeExternalLink } from "../lib/renderPolicy";
 
 interface Props {
   content: string;
   language: Language;
-}
-
-function safeLink(href: string | undefined): string | undefined {
-  if (!href) return undefined;
-  try {
-    const url = new URL(href, window.location.href);
-    return ["http:", "https:", "mailto:"].includes(url.protocol) ? href : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 export function MarkdownPreview({ content, language }: Props) {
@@ -28,7 +19,7 @@ export function MarkdownPreview({ content, language }: Props) {
         skipHtml
         components={{
           a({ href, children }) {
-            const safe = safeLink(href);
+            const safe = safeExternalLink(href);
             return safe
               ? <a href={safe} target="_blank" rel="noopener noreferrer">{children}</a>
               : <span className="unsafe-link">{children}</span>;

@@ -1,6 +1,7 @@
 export type Language = "zh" | "en";
 export type Theme = "light" | "dark";
-export type ViewMode = "edit" | "split" | "preview";
+export type ViewMode = "live" | "source" | "reading" | "split";
+export type EditorAppearance = "live" | "source";
 
 export const ROOT_FOLDER_ID = "root";
 
