@@ -4,7 +4,7 @@ import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, type Decoration
 import type { Language } from "../types";
 import {
   blockAtPosition, buildBlockGraph, convertBlock, deleteBlock, duplicateBlock, moveBlock, moveBlockToIndex, moveSingleBlock, siblingsFor,
-  type BlockKind, type ConvertibleBlockKind, type StructureEdit,
+  type BlockKind, type BlockRef, type ConvertibleBlockKind, type StructureEdit,
 } from "../lib/documentStructure";
 
 const BLOCK_MIME = "application/x-markgrove-block";
@@ -56,11 +56,12 @@ class BlockControlsWidget extends WidgetType {
   readonly kind: BlockKind;
   readonly active: boolean;
   readonly language: Language;
-  constructor(from: number, kind: BlockKind, active: boolean, language: Language) {
-    super(); this.from = from; this.kind = kind; this.active = active; this.language = language;
+  readonly onDragStart: (event: DragEvent, from: number, view: EditorView) => void;
+  constructor(from: number, kind: BlockKind, active: boolean, language: Language, onDragStart: (event: DragEvent, from: number, view: EditorView) => void) {
+    super(); this.from = from; this.kind = kind; this.active = active; this.language = language; this.onDragStart = onDragStart;
   }
   eq(other: BlockControlsWidget) { return other.from === this.from && other.kind === this.kind && other.active === this.active && other.language === this.language; }
-  toDOM() {
+  toDOM(view: EditorView) {
     const controls = document.createElement("span");
     controls.className = `cm-block-controls${this.active ? " active" : ""}`;
     controls.contentEditable = "false";
@@ -72,6 +73,7 @@ class BlockControlsWidget extends WidgetType {
 
     const handle = document.createElement("button");
     handle.type = "button"; handle.className = "cm-block-handle"; handle.draggable = true; handle.textContent = "⠿";
+    handle.addEventListener("dragstart", (event) => this.onDragStart(event, this.from, view));
     const kind = kindLabels[this.kind][this.language];
     handle.setAttribute("aria-label", this.language === "zh" ? `${kind}操作与拖动` : `${kind} actions and drag handle`);
 
@@ -94,7 +96,7 @@ class BlockControlsWidget extends WidgetType {
     controls.append(add, handle, menu);
     return controls;
   }
-  ignoreEvent() { return false; }
+  ignoreEvent(event: Event) { return event.type === "mousedown" || event.type === "dragstart"; }
 }
 
 function applyEdit(view: EditorView, edit: StructureEdit | null, userEvent: string): boolean {
@@ -126,21 +128,58 @@ function runAction(view: EditorView, from: number, action: string): boolean {
   return false;
 }
 
-function blockControlDecorations(view: EditorView, language: Language): DecorationSet {
+function blockControlDecorations(view: EditorView, language: Language, onDragStart: (event: DragEvent, from: number, view: EditorView) => void): DecorationSet {
   const active = blockAtPosition(buildBlockGraph(view.state), view.state.selection.main.head);
   const decorations = buildBlockGraph(view.state)
     .filter((block) => block.kind !== "list" && view.visibleRanges.some((range) => block.from <= range.to && block.to >= range.from))
-    .map((block) => Decoration.widget({ widget: new BlockControlsWidget(block.from, block.kind, block.key === active?.key, language), side: -1 }).range(block.from));
+    .map((block) => Decoration.widget({ widget: new BlockControlsWidget(block.from, block.kind, block.key === active?.key, language, onDragStart), side: -1 }).range(block.from));
   return Decoration.set(decorations, true);
+}
+
+function blockPositionFromPointer(event: DragEvent, view: EditorView): number | null {
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  const controlsElement = target?.closest<HTMLElement>("[data-block-from]");
+  if (controlsElement) {
+    const from = Number(controlsElement.dataset.blockFrom);
+    if (Number.isFinite(from)) return from;
+  }
+  return view.posAtCoords({ x: event.clientX, y: event.clientY });
+}
+
+function pointerIsAfterTarget(event: DragEvent, view: EditorView, blocks: readonly BlockRef[], sourceFrom: number, targetFrom: number): boolean {
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  if (target?.closest(".cm-block-handle")) {
+    const source = blockAtPosition(blocks, sourceFrom);
+    const dropTarget = blockAtPosition(blocks, targetFrom);
+    if (source && dropTarget) {
+      const siblings = siblingsFor(blocks, source);
+      const sourceIndex = siblings.findIndex((block) => block.key === source.key);
+      const targetIndex = siblings.findIndex((block) => block.key === dropTarget.key);
+      if (sourceIndex >= 0 && targetIndex >= 0) return sourceIndex < targetIndex;
+    }
+  }
+  const dropTarget = blockAtPosition(blocks, targetFrom);
+  const start = dropTarget ? view.coordsAtPos(dropTarget.from) : null;
+  const end = dropTarget ? view.coordsAtPos(dropTarget.to) : null;
+  return event.clientY > ((start?.top ?? event.clientY) + (end?.bottom ?? event.clientY)) / 2;
 }
 
 export function blockControlsExtension(language: Language): Extension {
   let dragSourceFrom: number | null = null;
+  const onDragStart = (event: DragEvent, from: number, view: EditorView) => {
+    if (!event.dataTransfer || view.composing) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(BLOCK_MIME, String(from));
+    dragSourceFrom = from;
+  };
   const controls = ViewPlugin.fromClass(class {
     decorations: DecorationSet;
-    constructor(view: EditorView) { this.decorations = blockControlDecorations(view, language); }
+    constructor(view: EditorView) { this.decorations = blockControlDecorations(view, language, onDragStart); }
     update(update: ViewUpdate) {
-      if (update.docChanged || update.selectionSet || update.viewportChanged || update.focusChanged) this.decorations = blockControlDecorations(update.view, language);
+      if (update.docChanged || update.selectionSet || update.viewportChanged || update.focusChanged) this.decorations = blockControlDecorations(update.view, language, onDragStart);
     }
   }, {
     decorations: (plugin) => plugin.decorations,
@@ -166,20 +205,11 @@ export function blockControlsExtension(language: Language): Extension {
         }
         return false;
       },
-      dragstart(event, view) {
-        const target = event.target instanceof HTMLElement ? event.target : null;
-        const controlsElement = target?.closest<HTMLElement>("[data-block-from]");
-        if (!controlsElement || !target?.closest(".cm-block-handle") || !event.dataTransfer || view.composing) return false;
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData(BLOCK_MIME, controlsElement.dataset.blockFrom ?? "");
-        dragSourceFrom = Number(controlsElement.dataset.blockFrom);
-        return true;
-      },
       dragover(event, view) {
         if (!event.dataTransfer?.types.includes(BLOCK_MIME)) return false;
         event.preventDefault();
         const sourceFrom = dragSourceFrom;
-        const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
+        const position = blockPositionFromPointer(event, view);
         if (position === null || sourceFrom === null || !Number.isFinite(sourceFrom)) return true;
         const blocks = buildBlockGraph(view.state);
         const source = blockAtPosition(blocks, sourceFrom);
@@ -188,9 +218,7 @@ export function blockControlsExtension(language: Language): Extension {
           view.dispatch({ effects: dropTargetEffect.of(null) });
           return true;
         }
-        const start = view.coordsAtPos(target.from);
-        const end = view.coordsAtPos(target.to);
-        const side = event.clientY > ((start?.top ?? event.clientY) + (end?.bottom ?? event.clientY)) / 2 ? "after" : "before";
+        const side = pointerIsAfterTarget(event, view, blocks, sourceFrom, position) ? "after" : "before";
         view.dispatch({ effects: dropTargetEffect.of({ position: side === "before" ? target.from : target.to, side }) });
         return true;
       },
@@ -198,7 +226,7 @@ export function blockControlsExtension(language: Language): Extension {
         if (!event.dataTransfer?.types.includes(BLOCK_MIME)) return false;
         event.preventDefault();
         const sourceFrom = dragSourceFrom ?? Number(event.dataTransfer.getData(BLOCK_MIME));
-        const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
+        const position = blockPositionFromPointer(event, view);
         view.dispatch({ effects: dropTargetEffect.of(null) });
         dragSourceFrom = null;
         if (position === null || !Number.isFinite(sourceFrom)) return true;
@@ -209,9 +237,7 @@ export function blockControlsExtension(language: Language): Extension {
         const siblings = siblingsFor(blocks, source);
         const sourceIndex = siblings.findIndex((block) => block.key === source.key);
         const targetIndex = siblings.findIndex((block) => block.key === target.key);
-        const start = view.coordsAtPos(target.from);
-        const end = view.coordsAtPos(target.to);
-        const after = event.clientY > ((start?.top ?? event.clientY) + (end?.bottom ?? event.clientY)) / 2;
+        const after = pointerIsAfterTarget(event, view, blocks, sourceFrom, position);
         const destination = after ? targetIndex + (sourceIndex > targetIndex ? 1 : 0) : targetIndex - (sourceIndex < targetIndex ? 1 : 0);
         applyEdit(view, moveBlockToIndex(view.state, sourceFrom, destination), "move.block.drop");
         return true;
