@@ -15,15 +15,20 @@ import { WorkspaceTree, type TreeMoveRequest } from "./components/WorkspaceTree"
 import { createBackup, downloadBlob, inspectBackup } from "./lib/backup";
 import { normalizeViewMode } from "./lib/editorMode";
 import { message, type MessageKey } from "./lib/i18n";
+import {
+  hasLocalFolderPermission, mirrorWorkspaceToLocalFolder, pickLocalFolder, readLocalFolderPreview,
+  supportsLocalFolderBackup,
+} from "./lib/localFolderBackup";
 import { countCharacters, MAX_MARKDOWN_BYTES, parseMarkdown, safeFilename, serializeMarkdown } from "./lib/markdown";
 import { collectTags } from "./lib/search";
 import {
   addImportedWorkspace, createFolder, createNote, deleteFolderForever, deleteNoteForever,
   dissolveFolder, duplicateNote, ensureStarterNote, getItemLocation, getSetting,
   isStoragePersistent, listRevisions, listWorkspace, markNoteOpened, moveItem, moveToTrash,
-  queueDraftSave, renameFolder, requestPersistentStorage, restoreFolder, restoreItemLocation,
+  estimateStorage, queueDraftSave, renameFolder, requestPersistentStorage, restoreFolder, restoreItemLocation,
   restoreNote, restoreRevision, setPinned, setSetting, trashFolder, undoDissolveFolder,
 } from "./lib/storage";
+import type { StorageEstimate } from "./lib/storage";
 import {
   countFolderContents, folderBreadcrumbs, trashedFolderIds, visibleNotesForNavigation,
   type NavigationTarget,
@@ -50,6 +55,13 @@ function preferredLanguage(): Language { return navigator.language.toLowerCase()
 function dateLabel(timestamp: number, language: Language): string {
   return new Intl.DateTimeFormat(language === "zh" ? "zh-CN" : "en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(timestamp);
 }
+function formatBytes(value: number | null, language: Language): string {
+  if (value === null) return "—";
+  const units = language === "zh" ? ["字节", "KB", "MB", "GB"] : ["B", "KB", "MB", "GB"];
+  let size = value; let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+  return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
+}
 function asDraft(note: NoteRecord): NoteDraft { return { id: note.id, title: note.title, content: note.content, tags: note.tags }; }
 
 export default function App() {
@@ -66,12 +78,18 @@ export default function App() {
   const [online, setOnline] = useState(navigator.onLine);
   const [persistent, setPersistent] = useState(false);
   const [lastBackup, setLastBackup] = useState<number | null>(null);
+  const [storageEstimate, setStorageEstimate] = useState<StorageEstimate>({ usage: null, quota: null });
+  const [localFolderHandle, setLocalFolderHandle] = useState<FileSystemDirectoryHandle | null>(null);
+  const [localFolderName, setLocalFolderName] = useState<string | null>(null);
+  const [localFolderBackupAt, setLocalFolderBackupAt] = useState<number | null>(null);
+  const [localFolderBusy, setLocalFolderBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [revisions, setRevisions] = useState<RevisionRecord[]>([]);
   const [backupPreview, setBackupPreview] = useState<BackupPreview | null>(null);
+  const [backupPreviewSource, setBackupPreviewSource] = useState<"zip" | "folder">("zip");
   const [moveTarget, setMoveTarget] = useState<NodeTarget | null>(null);
   const [renameTarget, setRenameTarget] = useState<NodeTarget | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -107,7 +125,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [storedLanguage, storedTheme, storedView, legacyView, storedEditingMode, storedBackup, storedExpanded, storedWidth, storedCollapsed, storedOutline] = await Promise.all([
+      const [storedLanguage, storedTheme, storedView, legacyView, storedEditingMode, storedBackup, storedExpanded, storedWidth, storedCollapsed, storedOutline, storedFolderHandle, storedFolderBackup] = await Promise.all([
         getSetting<Language>("language", preferredLanguage()), getSetting<Theme>("theme", "light"),
         getSetting<unknown>("editorViewMode", null), getSetting<unknown>("viewMode", null),
         getSetting<EditorAppearance>("lastEditingMode", "live"),
@@ -115,6 +133,8 @@ export default function App() {
         getSetting<string[]>("expandedFolderIds", []), getSetting<number>("sidebarWidth", 304),
         getSetting<boolean>("sidebarCollapsed", false),
         getSetting<boolean>("outlineOpen", false),
+        getSetting<FileSystemDirectoryHandle | null>("localFolderHandle", null),
+        getSetting<number | null>("localFolderBackupAt", null),
       ]);
       const normalizedView = normalizeViewMode(storedView, legacyView);
       lastEditingModeRef.current = normalizedView === "source" || normalizedView === "live"
@@ -125,13 +145,17 @@ export default function App() {
       await ensureStarterNote(storedLanguage === "zh" ? "欢迎来到 MarkGrove" : "Welcome to MarkGrove", storedLanguage === "zh" ? STARTER_ZH : STARTER_EN);
       const records = await listWorkspace();
       if (cancelled) return;
-      setLanguage(storedLanguage); setTheme(storedTheme); setViewMode(normalizedView); setLastBackup(storedBackup);
+      setLanguage(storedLanguage); setTheme(storedTheme); setViewMode(normalizedView); setLastBackup(storedBackup); setLocalFolderBackupAt(storedFolderBackup);
       setExpandedIds(new Set(storedExpanded)); setSidebarWidth(Math.max(240, Math.min(420, storedWidth))); setSidebarCollapsed(storedCollapsed); setOutlineOpen(storedOutline);
       setNotes(records.notes); setFolders(records.folders);
       const first = records.notes.filter((note) => note.trashedAt === null)
         .sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt - left.updatedAt)[0];
       if (first) { const next = asDraft(first); setSelectedNoteId(first.id); setDraft(next); draftRef.current = next; }
       setPersistent(await isStoragePersistent());
+      setStorageEstimate(await estimateStorage());
+      if (storedFolderHandle && typeof storedFolderHandle.getDirectoryHandle === "function") {
+        setLocalFolderHandle(storedFolderHandle); setLocalFolderName(storedFolderHandle.name);
+      }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -164,6 +188,9 @@ export default function App() {
     const timer = window.setTimeout(() => setToast((current) => current?.id === toast.id ? null : current), 10_000);
     return () => window.clearTimeout(timer);
   }, [toast]);
+  useEffect(() => {
+    if (settingsOpen) void estimateStorage().then(setStorageEstimate);
+  }, [settingsOpen]);
 
   const flushDraft = useCallback(async () => {
     if (saveTimerRef.current !== null) { window.clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
@@ -184,6 +211,7 @@ export default function App() {
   useEffect(() => {
     const handleVisibility = () => { if (document.visibilityState === "hidden") void flushDraft(); };
     const handlePageHide = () => { void flushDraft(); };
+    const handleBeforeUnload = () => { void flushDraft(); };
     const handleOnline = () => setOnline(true); const handleOffline = () => setOnline(false);
     const handleUpdate = (event: Event) => setUpdateApp(() => (event as CustomEvent<() => void>).detail);
     const handleGlobalKey = (event: KeyboardEvent) => {
@@ -200,11 +228,11 @@ export default function App() {
         }
       }
     };
-    document.addEventListener("visibilitychange", handleVisibility); window.addEventListener("pagehide", handlePageHide);
+    document.addEventListener("visibilitychange", handleVisibility); window.addEventListener("pagehide", handlePageHide); window.addEventListener("beforeunload", handleBeforeUnload);
     window.addEventListener("online", handleOnline); window.addEventListener("offline", handleOffline);
     window.addEventListener("markgrove-update-available", handleUpdate); window.addEventListener("keydown", handleGlobalKey);
     return () => {
-      document.removeEventListener("visibilitychange", handleVisibility); window.removeEventListener("pagehide", handlePageHide);
+      document.removeEventListener("visibilitychange", handleVisibility); window.removeEventListener("pagehide", handlePageHide); window.removeEventListener("beforeunload", handleBeforeUnload);
       window.removeEventListener("online", handleOnline); window.removeEventListener("offline", handleOffline);
       window.removeEventListener("markgrove-update-available", handleUpdate); window.removeEventListener("keydown", handleGlobalKey);
     };
@@ -354,6 +382,7 @@ export default function App() {
     await flushDraft(); const records = await listWorkspace();
     downloadBlob(await createBackup(records.notes, records.folders), `markgrove-backup-${new Date().toISOString().slice(0, 10)}.zip`);
     const now = Date.now(); setLastBackup(now); await setSetting("lastBackup", now);
+    setStorageEstimate(await estimateStorage());
   }
   async function handleBackupFile(file: File | undefined) {
     if (!file) return;
@@ -365,8 +394,58 @@ export default function App() {
   }
   async function confirmBackupRestore() {
     if (!backupPreview) return;
+    const source = backupPreviewSource;
     await addImportedWorkspace(backupPreview.notes, backupPreview.folders); const count = backupPreview.notes.length;
-    setBackupPreview(null); await reloadWorkspace(); showToast(t("importDone", { count }));
+    setBackupPreview(null); setBackupPreviewSource("zip"); await reloadWorkspace(); showToast(t(source === "folder" ? "localFolderRestored" : "importDone", { count }));
+  }
+
+  async function handleConnectLocalFolder() {
+    if (!supportsLocalFolderBackup()) { showToast(t("localFolderUnsupported")); return; }
+    setLocalFolderBusy(true);
+    try {
+      await flushDraft();
+      const handle = await pickLocalFolder();
+      if (!await hasLocalFolderPermission(handle, true)) throw new Error("LOCAL_FOLDER_PERMISSION");
+      const records = await listWorkspace();
+      await mirrorWorkspaceToLocalFolder(handle, records.notes, records.folders);
+      const now = Date.now();
+      setLocalFolderHandle(handle); setLocalFolderName(handle.name); setLocalFolderBackupAt(now);
+      await setSetting("localFolderHandle", handle); await setSetting("localFolderBackupAt", now);
+      setStorageEstimate(await estimateStorage()); showToast(t("localFolderBackedUp"));
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      showToast(t("localFolderError"));
+    } finally { setLocalFolderBusy(false); }
+  }
+
+  async function handleMirrorLocalFolder() {
+    if (!localFolderHandle) return handleConnectLocalFolder();
+    setLocalFolderBusy(true);
+    try {
+      if (!await hasLocalFolderPermission(localFolderHandle, true)) throw new Error("LOCAL_FOLDER_PERMISSION");
+      await flushDraft(); const records = await listWorkspace();
+      await mirrorWorkspaceToLocalFolder(localFolderHandle, records.notes, records.folders);
+      const now = Date.now(); setLocalFolderBackupAt(now); await setSetting("localFolderBackupAt", now);
+      showToast(t("localFolderBackedUp"));
+    } catch { showToast(t("localFolderError")); }
+    finally { setLocalFolderBusy(false); }
+  }
+
+  async function handleRestoreLocalFolder() {
+    if (!supportsLocalFolderBackup()) { showToast(t("localFolderUnsupported")); return; }
+    setLocalFolderBusy(true);
+    try {
+      const handle = await pickLocalFolder();
+      if (!await hasLocalFolderPermission(handle, true)) throw new Error("LOCAL_FOLDER_PERMISSION");
+      const preview = await readLocalFolderPreview(handle);
+      const existingIds = new Set([...notes.map((note) => note.id), ...folders.map((folder) => folder.id)]);
+      setLocalFolderHandle(handle); setLocalFolderName(handle.name); await setSetting("localFolderHandle", handle);
+      setBackupPreview({ ...preview, conflicts: [...preview.notes, ...preview.folders].filter((item) => existingIds.has(item.id)).length });
+      setBackupPreviewSource("folder");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      showToast(t("localFolderReadError"));
+    } finally { setLocalFolderBusy(false); }
   }
   async function openHistory() {
     if (!selectedNoteId) return; await flushDraft(); setRevisions(await listRevisions(selectedNoteId)); setHistoryOpen(true);
@@ -448,7 +527,7 @@ export default function App() {
             />
             {tags.length > 0 && <details className="tag-section"><summary><Tag size={13} />{t("tags")}</summary><div className="tag-filter">{tags.map(({ tag, count }) => <button type="button" className={navigation.kind === "tag" && navigation.tag === tag ? "active" : ""} key={tag} onClick={() => void navigate({ kind: "tag", tag })}>#{tag}<span>{count}</span></button>)}</div></details>}
             <button type="button" className={`trash-nav ${navigation.kind === "trash" ? "active" : ""}`} onClick={() => void navigate({ kind: "trash" })}><Trash2 size={15} />{t("trash")}<span>{notes.filter((note) => note.trashedAt !== null).length + folders.filter((folder) => folder.trashedAt !== null && !hiddenFolders.has(folder.parentId)).length}</span></button>
-            <div className="sidebar-foot"><HardDrive size={14} /><span>{t("localOnly")}</span><small>{lastBackup ? `${t("lastBackup")} ${dateLabel(lastBackup, language)}` : t("backupNever")}</small></div>
+            <div className="sidebar-foot"><HardDrive size={14} /><span>{t("localOnly")}</span><small>{localFolderName ? `${t("folderMirrorConnected")}: ${localFolderName}${localFolderBackupAt ? ` · ${dateLabel(localFolderBackupAt, language)}` : ""}` : lastBackup ? `${t("lastBackup")} ${dateLabel(lastBackup, language)}` : t("backupNever")}</small></div>
             <input ref={markdownInputRef} className="visually-hidden" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple onChange={(event) => void handleImport(event.target.files)} />
             <input ref={backupInputRef} className="visually-hidden" type="file" accept=".zip,application/zip" onChange={(event) => void handleBackupFile(event.target.files?.[0])} />
           </aside>
@@ -503,10 +582,16 @@ export default function App() {
       {settingsOpen && <Modal title={t("settings")} closeLabel={t("close")} onClose={() => setSettingsOpen(false)}><div className="settings-grid">
         <section><h3><Languages size={17} />{t("language")}</h3><div className="segmented"><button type="button" className={language === "zh" ? "active" : ""} onClick={() => void changeLanguage("zh")}>中文</button><button type="button" className={language === "en" ? "active" : ""} onClick={() => void changeLanguage("en")}>English</button></div></section>
         <section><h3>{theme === "light" ? <Sun size={17} /> : <Moon size={17} />}{t("theme")}</h3><div className="segmented"><button type="button" className={theme === "light" ? "active" : ""} onClick={() => void changeTheme("light")}><Sun size={15} />{t("themeLight")}</button><button type="button" className={theme === "dark" ? "active" : ""} onClick={() => void changeTheme("dark")}><Moon size={15} />{t("themeDark")}</button></div></section>
-        <section className="storage-setting"><h3><HardDrive size={17} />{t("storage")}</h3><p>{t(persistent ? "storagePersistent" : "storageBestEffort")}</p>{!persistent && <button type="button" onClick={() => void requestPersistentStorage().then(setPersistent)}>{t("requestPersistence")}</button>}<small>{lastBackup ? `${t("lastBackup")}: ${dateLabel(lastBackup, language)}` : t("backupNever")}</small></section>
+        <section className="storage-setting"><h3><HardDrive size={17} />{t("storage")}</h3><p>{t("storageIntro")}</p>
+          <div className="storage-row"><strong>{t("browserProtection")}</strong><span>{t(persistent ? "storagePersistent" : "storageBestEffort")}</span>{!persistent && <button type="button" onClick={() => void requestPersistentStorage().then((value) => { setPersistent(value); showToast(value ? t("persistenceEnabled") : t("persistenceUnavailable")); })}>{t("requestPersistence")}</button>}</div>
+          <div className="storage-row"><strong>{t("externalBackup")}</strong><span>{lastBackup ? `${t("lastBackup")}: ${dateLabel(lastBackup, language)}` : t("backupNever")}</span><button type="button" onClick={() => void handleBackup()}>{t("backup")}</button></div>
+          <div className="storage-row"><strong>{t("folderMirror")}</strong><span>{localFolderName ? `${t("folderMirrorConnected")}: ${localFolderName}${localFolderBackupAt ? ` · ${dateLabel(localFolderBackupAt, language)}` : ""}` : t("folderMirrorNotConnected")}</span><div className="storage-actions"><button type="button" disabled={localFolderBusy} onClick={() => void (localFolderHandle ? handleMirrorLocalFolder() : handleConnectLocalFolder())}>{localFolderBusy ? t("working") : localFolderHandle ? t("mirrorNow") : t("connectFolder")}</button><button type="button" disabled={localFolderBusy} onClick={() => void handleRestoreLocalFolder()}>{t("restoreFromFolder")}</button></div></div>
+          <small>{t("storageClearWarning")}</small>
+          <small>{t("storageUsage", { usage: formatBytes(storageEstimate.usage, language), quota: formatBytes(storageEstimate.quota, language) })}</small>
+        </section>
       </div></Modal>}
       {historyOpen && <Modal title={t("history")} closeLabel={t("close")} onClose={() => setHistoryOpen(false)}><div className="revision-list">{revisions.length === 0 ? <p>{t("revisionsEmpty")}</p> : revisions.map((revision) => <article key={revision.id}><div><strong>{revision.title}</strong><small>{dateLabel(revision.savedAt, language)} · v{revision.revision}</small><p>{revision.content.slice(0, 140) || "Markdown"}</p></div><button type="button" onClick={() => void handleRestoreRevision(revision)}><RotateCcw size={14} />{t("restoreRevision")}</button></article>)}</div></Modal>}
-      {backupPreview && <Modal title={t("restoreBackup")} closeLabel={t("close")} onClose={() => setBackupPreview(null)} footer={<><button type="button" onClick={() => setBackupPreview(null)}>{t("cancel")}</button><button type="button" className="primary" onClick={() => void confirmBackupRestore()}>{t("confirmRestore")}</button></>}><div className="backup-preview"><ArchiveRestore size={30} /><p>{t("backupReady", { count: backupPreview.notes.length, conflicts: backupPreview.conflicts })}</p><small>{backupPreview.folders.length} {language === "zh" ? "个文件夹" : "folders"} · {backupPreview.exportedAt && new Date(backupPreview.exportedAt).toLocaleString()}</small></div></Modal>}
+      {backupPreview && <Modal title={t(backupPreviewSource === "folder" ? "restoreFromFolder" : "restoreBackup")} closeLabel={t("close")} onClose={() => { setBackupPreview(null); setBackupPreviewSource("zip"); }} footer={<><button type="button" onClick={() => { setBackupPreview(null); setBackupPreviewSource("zip"); }}>{t("cancel")}</button><button type="button" className="primary" onClick={() => void confirmBackupRestore()}>{t(backupPreviewSource === "folder" ? "confirmFolderRestore" : "confirmRestore")}</button></>}><div className="backup-preview"><ArchiveRestore size={30} /><p>{t(backupPreviewSource === "folder" ? "folderReady" : "backupReady", { count: backupPreview.notes.length, conflicts: backupPreview.conflicts })}</p><small>{backupPreview.folders.length} {language === "zh" ? "个文件夹" : "folders"} · {backupPreview.exportedAt && new Date(backupPreview.exportedAt).toLocaleString()}</small></div></Modal>}
     </div>
   );
 }

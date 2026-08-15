@@ -395,3 +395,17 @@ export async function requestPersistentStorage(): Promise<boolean> {
 export async function isStoragePersistent(): Promise<boolean> {
   return navigator.storage?.persisted ? navigator.storage.persisted() : false;
 }
+
+export interface StorageEstimate {
+  usage: number | null;
+  quota: number | null;
+}
+
+export async function estimateStorage(): Promise<StorageEstimate> {
+  if (!navigator.storage?.estimate) return { usage: null, quota: null };
+  const estimate = await navigator.storage.estimate();
+  return {
+    usage: typeof estimate.usage === "number" ? estimate.usage : null,
+    quota: typeof estimate.quota === "number" ? estimate.quota : null,
+  };
+}

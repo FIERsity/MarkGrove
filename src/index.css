@@ -281,6 +281,15 @@ body.is-block-dragging { cursor: grabbing; user-select: none; }
 .segmented button.active { color: var(--green); background: var(--paper-raised); box-shadow: 0 1px 4px rgba(0,0,0,.08); }
 .storage-setting p { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
 .storage-setting small { display: block; margin-top: 10px; color: var(--muted); }
+.storage-setting { display: grid; gap: 10px; }
+.storage-setting h3, .storage-setting p { margin: 0; }
+.storage-row { display: grid; grid-template-columns: minmax(112px, .8fr) minmax(0, 1.45fr) auto; align-items: center; gap: 10px 14px; padding: 10px 0; border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent); }
+.storage-row strong { font-size: 12px; }
+.storage-row > span { min-width: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.storage-row button { min-height: 34px; white-space: nowrap; font-size: 11px; }
+.storage-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.storage-actions button:last-child { color: var(--green); border-color: var(--line); background: transparent; }
+.storage-setting button:disabled { cursor: progress; opacity: .58; }
 .revision-list { display: grid; gap: 9px; }
 .revision-list > p { color: var(--muted); }
 .revision-list article { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; }

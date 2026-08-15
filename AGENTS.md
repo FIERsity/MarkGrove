@@ -38,7 +38,7 @@ MarkGrove 是独立版本控制、部署到 GitHub Pages 的本地优先 Markdow
 - 编辑模式：当前键 `editorViewMode` 支持 `live`、`source`、`reading`、`split`；旧 `viewMode` 的 edit/split/preview 分别迁移为 source/live/live，不涉及 IndexedDB schema 变化。
 - 持久化：Dexie/IndexedDB `markgrove`，当前 schema v3；`notes`、`folders`、`revisions`、`settings` 四表；v1/v2 原地迁移到根目录并保留旧修订。
 - 工作区：文件夹与笔记统一稀疏排序；同一移动命令供指针拖动、键盘移动和对话框使用；文件夹禁止移入自身或后代。
-- 备份：ZIP 格式 `markgrove-backup` 当前写出 v2，并显式读取 v1/v2；单篇 Markdown 8 MiB、恢复包 50 MiB、5,000 篇上限。
+- 备份：ZIP 格式 `markgrove-backup` 当前写出 v2，并显式读取 v1/v2；单篇 Markdown 8 MiB、恢复包 50 MiB、5,000 篇上限。可选 File System Access API 本地文件夹镜像写入 `.markgrove/manifest.json` 与层级 `notes/**/*.md`，当前格式 v1；它是用户授权的单向外部副本，不是云同步或双向文件同步。
 - PWA：`registerType: "prompt"`；Workbox `runtimeCaching: []`，只预缓存应用 shell。
 - 最低验证：`npm run check`，等价于 test + lint + build；文件与 PWA 改动另做桌面浏览器检查。
 - 发布：`main` 经 `.github/workflows/pages.yml` 验证后发布 `dist/` 到 GitHub Pages；`dist/` 不追踪。
