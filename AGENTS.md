@@ -34,7 +34,7 @@ MarkGrove 是独立版本控制、部署到 GitHub Pages 的本地优先 Markdow
 
 - 运行时：Node.js >=24，React 19、TypeScript、Vite 8。
 - 编辑与预览：CodeMirror 6 + Lezer GFM/Math 语法树提供默认可编辑 Live Preview；源码/实时预览共用编辑状态，`react-markdown` + remark-gfm/remark-math + 本地 KaTeX 只负责独立阅读与分栏视图；raw HTML 跳过，图片渲染为本地隐私占位。
-- 结构化写作：Block、本文大纲与拖动目标均从当前 Markdown 语法树临时派生，不写入私有 block ID，不改变笔记、IndexedDB 或备份格式；Block 命令以单次 CodeMirror transaction 进入统一撤销历史。指针拖动按兄弟块盒子和块间空隙命中，段落/标题可在列表内外转换，列表项可移出或加入另一列表；键盘与菜单仍只做同一父级重排。
+- 结构化写作：Block、本文大纲与拖动目标均从当前 Markdown 语法树临时派生，不写入私有 block ID，不改变笔记、IndexedDB 或备份格式；Block 命令以单次 CodeMirror transaction 进入统一撤销历史。六点手柄用 pointer 手势拖动，放置盒子按 live preview 的 line block 计算；菜单浮到 document.body，避免光标盖住。指针拖动按兄弟块盒子和块间空隙命中，段落/标题可在列表内外转换，列表项可移出或加入另一列表；键盘与菜单仍只做同一父级重排。
 - 编辑模式：当前键 `editorViewMode` 支持 `live`、`source`、`reading`、`split`；旧 `viewMode` 的 edit/split/preview 分别迁移为 source/live/live，不涉及 IndexedDB schema 变化。
 - 持久化：Dexie/IndexedDB `markgrove`，当前 schema v3；`notes`、`folders`、`revisions`、`settings` 四表；v1/v2 原地迁移到根目录并保留旧修订。
 - 工作区：文件夹与笔记统一稀疏排序；同一移动命令供指针拖动、键盘移动和对话框使用；文件夹禁止移入自身或后代。

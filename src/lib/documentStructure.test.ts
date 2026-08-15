@@ -173,4 +173,25 @@ describe("pointer drop slots", () => {
     expect(dropBlock(current, code.from, { action: "convert-to-list-item", parentKey: ordered.key, index: 1 })).toBeNull();
     expect(pickDropDestination(code, blocks, 80, boxOf)).toMatchObject({ status: "forbidden", hint: "forbidden" });
   });
+
+  it("still picks a slot when a middle sibling has no box", () => {
+    const doc = "Alpha\n\nBeta\n\nGamma";
+    const current = state(doc, 1);
+    const blocks = buildBlockGraph(current);
+    const [alpha, beta, gamma] = documentBlocks(blocks);
+    const boxOf = (block: BlockRef): BlockBox | null => {
+      if (block.key === beta!.key) return null;
+      if (block.key === alpha!.key) return { top: 0, bottom: 30 };
+      if (block.key === gamma!.key) return { top: 120, bottom: 150 };
+      return null;
+    };
+    expect(pickDropDestination(alpha!, blocks, 80, boxOf)).toMatchObject({
+      status: "legal",
+      dest: { action: "reorder", parentKey: "document", index: 2 },
+    });
+    expect(pickDropDestination(gamma!, blocks, 10, boxOf)).toMatchObject({
+      status: "legal",
+      dest: { action: "reorder", parentKey: "document", index: 0 },
+    });
+  });
 });

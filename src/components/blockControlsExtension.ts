@@ -7,7 +7,7 @@ import {
   type BlockBox, type BlockKind, type BlockRef, type ConvertibleBlockKind, type DropHint, type DropPick, type DropStatus, type StructureEdit,
 } from "../lib/documentStructure";
 
-const BLOCK_MIME = "application/x-markgrove-block";
+const DRAG_THRESHOLD = 4;
 
 interface DropGuide {
   pos: number;
@@ -103,16 +103,27 @@ const conversionTargets: Array<{ target: ConvertibleBlockKind; zh: string; en: s
   { target: "math", zh: "公式", en: "Math" },
 ];
 
+interface PointerSession {
+  down(event: PointerEvent, from: number, view: EditorView, handle: HTMLElement): void;
+}
+
 class BlockControlsWidget extends WidgetType {
   readonly from: number;
   readonly kind: BlockKind;
   readonly active: boolean;
   readonly language: Language;
-  readonly onDragStart: (event: DragEvent, from: number, view: EditorView) => void;
-  constructor(from: number, kind: BlockKind, active: boolean, language: Language, onDragStart: (event: DragEvent, from: number, view: EditorView) => void) {
-    super(); this.from = from; this.kind = kind; this.active = active; this.language = language; this.onDragStart = onDragStart;
+  readonly pointers: PointerSession;
+  constructor(from: number, kind: BlockKind, active: boolean, language: Language, pointers: PointerSession) {
+    super();
+    this.from = from;
+    this.kind = kind;
+    this.active = active;
+    this.language = language;
+    this.pointers = pointers;
   }
-  eq(other: BlockControlsWidget) { return other.from === this.from && other.kind === this.kind && other.active === this.active && other.language === this.language; }
+  eq(other: BlockControlsWidget) {
+    return other.from === this.from && other.kind === this.kind && other.active === this.active && other.language === this.language;
+  }
   toDOM(view: EditorView) {
     const controls = document.createElement("span");
     controls.className = `cm-block-controls${this.active ? " active" : ""}`;
@@ -124,31 +135,17 @@ class BlockControlsWidget extends WidgetType {
     add.setAttribute("aria-label", this.language === "zh" ? "在下方插入段落" : "Insert paragraph below");
 
     const handle = document.createElement("button");
-    handle.type = "button"; handle.className = "cm-block-handle"; handle.draggable = true; handle.textContent = "⠿";
-    handle.addEventListener("dragstart", (event) => this.onDragStart(event, this.from, view));
+    handle.type = "button"; handle.className = "cm-block-handle"; handle.textContent = "⠿";
     const kind = kindLabels[this.kind][this.language];
     handle.setAttribute("aria-label", this.language === "zh" ? `${kind}操作与拖动` : `${kind} actions and drag handle`);
+    handle.addEventListener("pointerdown", (event) => this.pointers.down(event, this.from, view, handle));
 
-    const menu = document.createElement("span");
-    menu.className = "cm-block-menu";
-    menu.setAttribute("role", "menu");
-    const actions = [
-      ["up", this.language === "zh" ? "上移" : "Move up"],
-      ["down", this.language === "zh" ? "下移" : "Move down"],
-      ["duplicate", this.language === "zh" ? "复制" : "Duplicate"],
-      ["delete", this.language === "zh" ? "删除" : "Delete"],
-    ];
-    for (const [action, label] of actions) {
-      const button = document.createElement("button"); button.type = "button"; button.dataset.blockAction = action; button.textContent = label; button.setAttribute("role", "menuitem"); menu.append(button);
-    }
-    const separator = document.createElement("span"); separator.className = "cm-block-menu-label"; separator.textContent = this.language === "zh" ? "转换为" : "Turn into"; menu.append(separator);
-    for (const conversion of conversionTargets) {
-      const button = document.createElement("button"); button.type = "button"; button.dataset.blockAction = `convert:${conversion.target}`; button.textContent = this.language === "zh" ? conversion.zh : conversion.en; button.setAttribute("role", "menuitem"); menu.append(button);
-    }
-    controls.append(add, handle, menu);
+    controls.append(add, handle);
     return controls;
   }
-  ignoreEvent(event: Event) { return event.type === "mousedown" || event.type === "dragstart"; }
+  ignoreEvent(event: Event) {
+    return /^(mouse|pointer|touch|drag)/.test(event.type);
+  }
 }
 
 function applyEdit(view: EditorView, edit: StructureEdit | null, userEvent: string): boolean {
@@ -180,21 +177,25 @@ function runAction(view: EditorView, from: number, action: string): boolean {
   return false;
 }
 
-function blockControlDecorations(view: EditorView, language: Language, onDragStart: (event: DragEvent, from: number, view: EditorView) => void): DecorationSet {
+function blockControlDecorations(view: EditorView, language: Language, pointers: PointerSession): DecorationSet {
   const active = blockAtPosition(buildBlockGraph(view.state), view.state.selection.main.head);
   const decorations = buildBlockGraph(view.state)
     .filter((block) => block.kind !== "list" && view.visibleRanges.some((range) => block.from <= range.to && block.to >= range.from))
-    .map((block) => Decoration.widget({ widget: new BlockControlsWidget(block.from, block.kind, block.key === active?.key, language, onDragStart), side: -1 }).range(block.from));
+    .map((block) => Decoration.widget({ widget: new BlockControlsWidget(block.from, block.kind, block.key === active?.key, language, pointers), side: -1 }).range(block.from));
   return Decoration.set(decorations, true);
 }
 
 function blockBox(view: EditorView, block: BlockRef): BlockBox | null {
-  const start = view.coordsAtPos(block.from);
-  const end = view.coordsAtPos(Math.max(block.from, Math.min(block.to, view.state.doc.length)));
-  if (!start || !end) return null;
-  const top = Math.min(start.top, end.top);
-  const bottom = Math.max(start.bottom, end.bottom);
-  return bottom > top ? { top, bottom } : { top, bottom: top + 18 };
+  const last = Math.max(block.from, Math.min(block.to - (block.to > block.from ? 1 : 0), view.state.doc.length));
+  try {
+    const start = view.lineBlockAt(block.from);
+    const end = view.lineBlockAt(last);
+    const top = view.documentTop + Math.min(start.top, end.top);
+    const bottom = view.documentTop + Math.max(start.bottom, end.bottom);
+    return bottom > top ? { top, bottom } : { top, bottom: top + 18 };
+  } catch {
+    return null;
+  }
 }
 
 function pickFromPointer(view: EditorView, sourceFrom: number, clientY: number): DropPick | null {
@@ -212,6 +213,7 @@ function slotKey(pick: DropPick | null): string {
 function setDragState(view: EditorView, dragging: boolean, forbidden = false) {
   view.dom.classList.toggle("is-block-dragging", dragging);
   view.dom.classList.toggle("is-drop-forbidden", dragging && forbidden);
+  document.body.classList.toggle("is-block-dragging", dragging);
 }
 
 function autoScroll(view: EditorView, clientY: number) {
@@ -223,9 +225,30 @@ function autoScroll(view: EditorView, clientY: number) {
   else if (clientY > rect.bottom - edge) scroller.scrollTop += Math.max(4, Math.ceil((1 - Math.max(0, rect.bottom - clientY) / edge) * max));
 }
 
+function blockPreviewText(view: EditorView, from: number): string {
+  const block = blockAtPosition(buildBlockGraph(view.state), from);
+  if (!block) return "";
+  return view.state.doc.sliceString(block.from, block.to).split("\n")[0]?.replace(/^#{1,6}[ \t]+/, "").replace(/^[-*+][ \t]+/, "").replace(/^\d+[.)][ \t]+/, "").trim() || "";
+}
+
+function liveHandle(view: EditorView, from: number): HTMLElement | null {
+  return view.dom.querySelector(`.cm-block-controls[data-block-from="${from}"] .cm-block-handle`);
+}
+
 export function blockControlsExtension(language: Language): Extension {
   let dragSourceFrom: number | null = null;
+  let dragging = false;
+  let startX = 0;
+  let startY = 0;
   let lastSlot = "";
+  let lastPick: DropPick | null = null;
+  let menuFrom: number | null = null;
+  let menuEl: HTMLElement | null = null;
+  let menuHandle: HTMLElement | null = null;
+  let ghostEl: HTMLElement | null = null;
+  let capturedHandle: HTMLElement | null = null;
+  let unbindDrag: (() => void) | null = null;
+
   const showGuide = (view: EditorView, pick: DropPick | null) => {
     const key = slotKey(pick);
     if (key === lastSlot) return;
@@ -235,29 +258,217 @@ export function blockControlsExtension(language: Language): Extension {
       : null;
     view.dispatch({ effects: dropTargetEffect.of(guide) });
   };
+
+  const removeGhost = () => {
+    ghostEl?.remove();
+    ghostEl = null;
+  };
+
+  const placeGhost = (view: EditorView, clientX: number, clientY: number) => {
+    if (!ghostEl) {
+      ghostEl = document.createElement("div");
+      ghostEl.className = "cm-block-drag-ghost";
+      ghostEl.textContent = blockPreviewText(view, dragSourceFrom ?? 0);
+      document.body.append(ghostEl);
+    }
+    ghostEl.style.left = `${clientX + 12}px`;
+    ghostEl.style.top = `${clientY + 10}px`;
+  };
+
+  const closeMenu = () => {
+    menuEl?.remove();
+    menuEl = null;
+    menuFrom = null;
+    menuHandle = null;
+    document.querySelectorAll(".cm-block-controls.menu-open").forEach((element) => element.classList.remove("menu-open"));
+  };
+
+  const placeMenu = (handle: HTMLElement) => {
+    if (!menuEl) return;
+    const handleBox = handle.getBoundingClientRect();
+    const width = menuEl.offsetWidth;
+    const height = menuEl.offsetHeight;
+    let left = handleBox.left;
+    let top = handleBox.bottom + 6;
+    if (top + height > window.innerHeight - 8) top = handleBox.top - height - 6;
+    left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+    top = Math.max(8, Math.min(top, window.innerHeight - height - 8));
+    menuEl.style.left = `${left}px`;
+    menuEl.style.top = `${top}px`;
+  };
+
+  const openMenu = (view: EditorView, from: number, handle: HTMLElement) => {
+    closeMenu();
+    const menu = document.createElement("div");
+    menu.className = "cm-block-menu";
+    menu.setAttribute("role", "menu");
+    const actions: Array<[string, string]> = [
+      ["up", language === "zh" ? "上移" : "Move up"],
+      ["down", language === "zh" ? "下移" : "Move down"],
+      ["duplicate", language === "zh" ? "复制" : "Duplicate"],
+      ["delete", language === "zh" ? "删除" : "Delete"],
+    ];
+    for (const [action, label] of actions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.blockAction = action;
+      button.textContent = label;
+      button.setAttribute("role", "menuitem");
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        closeMenu();
+        runAction(view, from, action);
+      });
+      menu.append(button);
+    }
+    const separator = document.createElement("span");
+    separator.className = "cm-block-menu-label";
+    separator.textContent = language === "zh" ? "转换为" : "Turn into";
+    menu.append(separator);
+    for (const conversion of conversionTargets) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.blockAction = `convert:${conversion.target}`;
+      button.textContent = language === "zh" ? conversion.zh : conversion.en;
+      button.setAttribute("role", "menuitem");
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        closeMenu();
+        runAction(view, from, `convert:${conversion.target}`);
+      });
+      menu.append(button);
+    }
+    document.body.append(menu);
+    menuEl = menu;
+    menuFrom = from;
+    menuHandle = handle;
+    handle.closest(".cm-block-controls")?.classList.add("menu-open");
+    placeMenu(handle);
+  };
+
   const finishDrag = (view: EditorView) => {
+    unbindDrag?.();
+    unbindDrag = null;
+    if (capturedHandle) {
+      const pointerId = Number(capturedHandle.dataset.pointerId);
+      if (Number.isFinite(pointerId) && capturedHandle.hasPointerCapture(pointerId)) capturedHandle.releasePointerCapture(pointerId);
+    }
+    capturedHandle = null;
     dragSourceFrom = null;
+    dragging = false;
     lastSlot = "";
+    lastPick = null;
+    removeGhost();
     setDragState(view, false);
     view.dispatch({ effects: dropTargetEffect.of(null) });
   };
-  const onDragStart = (event: DragEvent, from: number, view: EditorView) => {
-    if (!event.dataTransfer || view.composing) {
-      event.preventDefault();
-      return;
-    }
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData(BLOCK_MIME, String(from));
-    dragSourceFrom = from;
-    lastSlot = "";
-    view.dom.querySelectorAll(".cm-block-controls.menu-open").forEach((element) => element.classList.remove("menu-open"));
-    setDragState(view, true);
+
+  const resolvePick = (view: EditorView, sourceFrom: number, clientY: number): DropPick | null => {
+    const pick = pickFromPointer(view, sourceFrom, clientY) ?? lastPick;
+    if (pick) lastPick = pick;
+    return pick;
   };
+
+  const pointers: PointerSession = {
+    down(event, from, view, handle) {
+      if (event.button !== 0 || view.composing) return;
+      event.preventDefault();
+      event.stopPropagation();
+      try { handle.setPointerCapture(event.pointerId); } catch { /* capture is optional */ }
+      capturedHandle = handle;
+      handle.dataset.pointerId = String(event.pointerId);
+      dragSourceFrom = from;
+      dragging = false;
+      startX = event.clientX;
+      startY = event.clientY;
+      lastSlot = "";
+      lastPick = null;
+
+      const onMove = (moveEvent: PointerEvent) => {
+        if (dragSourceFrom === null) return;
+        const dx = moveEvent.clientX - startX;
+        const dy = moveEvent.clientY - startY;
+        if (!dragging) {
+          if (dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD) return;
+          dragging = true;
+          closeMenu();
+          setDragState(view, true);
+        }
+        moveEvent.preventDefault();
+        autoScroll(view, moveEvent.clientY);
+        const pick = resolvePick(view, dragSourceFrom, moveEvent.clientY);
+        setDragState(view, true, pick?.status === "forbidden");
+        showGuide(view, pick);
+        placeGhost(view, moveEvent.clientX, moveEvent.clientY);
+      };
+      const onUp = (upEvent: PointerEvent) => {
+        if (dragSourceFrom === null) return;
+        const sourceFrom = dragSourceFrom;
+        const wasDragging = dragging;
+        const pick = resolvePick(view, sourceFrom, upEvent.clientY);
+        finishDrag(view);
+        if (wasDragging) {
+          if (pick?.status === "legal") applyEdit(view, dropBlock(view.state, sourceFrom, pick.dest), "move.block.drop");
+          return;
+        }
+        const handleNow = liveHandle(view, sourceFrom) ?? handle;
+        if (menuFrom === sourceFrom) closeMenu();
+        else openMenu(view, sourceFrom, handleNow);
+      };
+      const onCancel = () => {
+        if (dragSourceFrom === null) return;
+        finishDrag(view);
+      };
+      window.addEventListener("pointermove", onMove, true);
+      window.addEventListener("pointerup", onUp, true);
+      window.addEventListener("pointercancel", onCancel, true);
+      unbindDrag = () => {
+        window.removeEventListener("pointermove", onMove, true);
+        window.removeEventListener("pointerup", onUp, true);
+        window.removeEventListener("pointercancel", onCancel, true);
+      };
+    },
+  };
+
+  const onGlobalPointerDown = (event: Event) => {
+    if (menuFrom === null || !menuEl) return;
+    const target = event.target;
+    if (target instanceof Node && (menuEl.contains(target) || menuHandle?.contains(target))) return;
+    closeMenu();
+  };
+
+  const onGlobalKeyDown = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || menuFrom === null) return;
+    event.preventDefault();
+    closeMenu();
+  };
+
   const controls = ViewPlugin.fromClass(class {
     decorations: DecorationSet;
-    constructor(view: EditorView) { this.decorations = blockControlDecorations(view, language, onDragStart); }
+    readonly view: EditorView;
+    constructor(view: EditorView) {
+      this.view = view;
+      this.decorations = blockControlDecorations(view, language, pointers);
+      window.addEventListener("pointerdown", onGlobalPointerDown, true);
+      window.addEventListener("mousedown", onGlobalPointerDown, true);
+      window.addEventListener("keydown", onGlobalKeyDown, true);
+      window.addEventListener("resize", closeMenu);
+      view.scrollDOM.addEventListener("scroll", closeMenu, { passive: true });
+    }
     update(update: ViewUpdate) {
-      if (update.docChanged || update.selectionSet || update.viewportChanged || update.focusChanged) this.decorations = blockControlDecorations(update.view, language, onDragStart);
+      if (dragSourceFrom !== null) return;
+      if (update.docChanged || update.selectionSet || update.viewportChanged || update.focusChanged) {
+        this.decorations = blockControlDecorations(update.view, language, pointers);
+      }
+    }
+    destroy() {
+      window.removeEventListener("pointerdown", onGlobalPointerDown, true);
+      window.removeEventListener("mousedown", onGlobalPointerDown, true);
+      window.removeEventListener("keydown", onGlobalKeyDown, true);
+      window.removeEventListener("resize", closeMenu);
+      this.view.scrollDOM.removeEventListener("scroll", closeMenu);
+      if (dragSourceFrom !== null) finishDrag(this.view);
+      closeMenu();
     }
   }, {
     decorations: (plugin) => plugin.decorations,
@@ -274,45 +485,17 @@ export function blockControlsExtension(language: Language): Extension {
         if (!controlsElement) return false;
         const from = Number(controlsElement.dataset.blockFrom);
         const action = target?.closest<HTMLElement>("[data-block-action]")?.dataset.blockAction;
-        if (action) { event.preventDefault(); controlsElement.classList.remove("menu-open"); return runAction(view, from, action); }
-        if (target?.closest(".cm-block-handle")) {
-          event.preventDefault();
-          view.dom.querySelectorAll(".cm-block-controls.menu-open").forEach((element) => { if (element !== controlsElement) element.classList.remove("menu-open"); });
-          controlsElement.classList.toggle("menu-open");
-          return true;
-        }
-        return false;
-      },
-      dragenter(event) {
-        if (!event.dataTransfer?.types.includes(BLOCK_MIME)) return false;
+        if (!action) return false;
         event.preventDefault();
+        closeMenu();
+        return runAction(view, from, action);
+      },
+      keydown(event) {
+        if (event.key !== "Escape" || menuFrom === null) return false;
+        event.preventDefault();
+        closeMenu();
         return true;
       },
-      dragover(event, view) {
-        if (!event.dataTransfer?.types.includes(BLOCK_MIME)) return false;
-        event.preventDefault();
-        autoScroll(view, event.clientY);
-        const sourceFrom = dragSourceFrom;
-        if (sourceFrom === null) {
-          event.dataTransfer.dropEffect = "none";
-          return true;
-        }
-        const pick = pickFromPointer(view, sourceFrom, event.clientY);
-        event.dataTransfer.dropEffect = pick?.status === "legal" ? "move" : "none";
-        setDragState(view, true, pick?.status === "forbidden");
-        showGuide(view, pick);
-        return true;
-      },
-      drop(event, view) {
-        if (!event.dataTransfer?.types.includes(BLOCK_MIME)) return false;
-        event.preventDefault();
-        const sourceFrom = dragSourceFrom ?? Number(event.dataTransfer.getData(BLOCK_MIME));
-        const pick = Number.isFinite(sourceFrom) ? pickFromPointer(view, sourceFrom, event.clientY) : null;
-        finishDrag(view);
-        if (pick?.status === "legal") applyEdit(view, dropBlock(view.state, sourceFrom, pick.dest), "move.block.drop");
-        return true;
-      },
-      dragend(_event, view) { finishDrag(view); return false; },
     },
   });
 

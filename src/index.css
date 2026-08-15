@@ -42,7 +42,7 @@ button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visibl
 
 .app-shell { height: 100%; display: flex; flex-direction: column; background: var(--paper); }
 .topbar, .update-banner { flex: none; }
-.topbar { display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--paper-raised) 92%, transparent); }
+.topbar { display: flex; min-height: 58px; align-items: center; justify-content: space-between; padding: 12px 22px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--paper-raised) 92%, transparent); }
 .brand-block, .topbar-status, .brand-block > div { display: flex; align-items: center; }
 .brand-block { gap: 10px; }
 .brand-block > div { align-items: flex-start; flex-direction: column; line-height: 1.05; }
@@ -101,7 +101,7 @@ button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visibl
 .sidebar-foot small { grid-column: 2; margin-top: 2px; }
 
 .note-workspace { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) 27px; background: var(--paper-raised); }
-.note-toolbar { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 24px; padding: 10px 16px 8px 22px; border-bottom: 1px solid var(--line); }
+.note-toolbar { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 18px 12px 24px; border-bottom: 1px solid var(--line); }
 .title-stack { min-width: 0; display: grid; flex: 1; gap: 6px; }
 .note-title-input { width: 100%; padding: 0; color: var(--ink); border: 0; outline: 0; background: transparent; font: 600 22px/1.2 Georgia, "Times New Roman", serif; text-overflow: ellipsis; }
 .tag-input { display: flex; max-width: 460px; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
@@ -177,16 +177,17 @@ button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visibl
 .cm-live-math.invalid { color: #9f463e; border: 1px dashed #9f463e66; background: #9f463e0c; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .editor-host.appearance-live .cm-live-math-source { color: var(--green); background: color-mix(in srgb, var(--green-pale) 55%, transparent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .markdown-preview .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding-block: .2em; }
-.cm-block-controls { position: absolute; z-index: 12; left: -43px; top: 0; display: inline-flex; align-items: center; gap: 1px; opacity: 0; transition: opacity .12s ease; }
+.cm-block-controls { position: absolute; z-index: 12; left: -50px; top: 0; display: inline-flex; align-items: center; gap: 1px; opacity: 0; transition: opacity .12s ease; }
 .cm-line:hover > .cm-block-controls, .cm-block-controls.active, .cm-block-controls:focus-within, .cm-block-controls.menu-open { opacity: 1; }
-.cm-block-controls > button { display: grid; width: 21px; height: 24px; place-items: center; padding: 0; color: var(--muted); border: 0; border-radius: 5px; background: transparent; cursor: pointer; font: 15px/1 ui-sans-serif, system-ui, sans-serif; }
+.cm-block-controls > button { display: grid; width: 24px; height: 28px; place-items: center; padding: 0; color: var(--muted); border: 0; border-radius: 5px; background: transparent; cursor: pointer; font: 15px/1 ui-sans-serif, system-ui, sans-serif; }
 .cm-block-controls > button:hover, .cm-block-controls > button:focus-visible { color: var(--green); background: var(--green-pale); }
-.cm-block-handle { cursor: grab !important; }
+.cm-block-handle { cursor: grab !important; touch-action: none; }
 .cm-block-handle:active, .cm-editor.is-block-dragging .cm-block-handle { cursor: grabbing !important; }
 .cm-editor.is-block-dragging { cursor: grabbing; }
 .cm-editor.is-block-dragging.is-drop-forbidden, .cm-editor.is-block-dragging.is-drop-forbidden * { cursor: not-allowed !important; }
-.cm-block-menu { position: absolute; z-index: 30; top: 27px; left: 20px; display: none; width: 166px; max-height: 310px; padding: 5px; overflow: auto; color: var(--ink); border: 1px solid var(--line); border-radius: 9px; background: var(--paper-raised); box-shadow: var(--shadow); font: 12px/1.2 ui-sans-serif, system-ui, sans-serif; }
-.cm-block-controls.menu-open .cm-block-menu { display: grid; }
+.cm-block-menu { position: fixed; z-index: 38; display: grid; width: 166px; max-height: min(310px, calc(100vh - 24px)); padding: 5px; overflow: auto; color: var(--ink); border: 1px solid var(--line); border-radius: 9px; background: var(--paper-raised); box-shadow: var(--shadow); font: 12px/1.2 ui-sans-serif, system-ui, sans-serif; }
+.cm-block-drag-ghost { position: fixed; z-index: 39; max-width: 280px; padding: 6px 10px; overflow: hidden; color: var(--ink); border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--paper-raised) 92%, transparent); box-shadow: var(--shadow); font: 13px/1.35 Georgia, "Songti SC", "Times New Roman", serif; white-space: nowrap; text-overflow: ellipsis; pointer-events: none; opacity: .92; }
+body.is-block-dragging { cursor: grabbing; user-select: none; }
 .cm-block-menu button { padding: 7px 9px; color: inherit; border: 0; border-radius: 5px; background: transparent; text-align: left; cursor: pointer; }
 .cm-block-menu button:hover, .cm-block-menu button:focus-visible { color: var(--green); background: var(--green-pale); }
 .cm-block-menu-label { padding: 8px 9px 4px; color: var(--muted); border-top: 1px solid var(--line); font-size: 9px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }

@@ -559,7 +559,21 @@ function pickAmongSiblings(
     }
     if (next && y > bottom && y < next.box.top) return makePick(source, parentKey, siblingIndex(siblings, next.block), "after", current.block.to, blocks);
   }
-  return null;
+  let best: DropPick | null = null;
+  let bestDist = Infinity;
+  for (const entry of boxes) {
+    const beforeDist = Math.abs(y - entry.box.top);
+    const afterDist = Math.abs(y - entry.box.bottom);
+    if (beforeDist < bestDist) {
+      bestDist = beforeDist;
+      best = makePick(source, parentKey, siblingIndex(siblings, entry.block), "before", entry.block.from, blocks);
+    }
+    if (afterDist < bestDist) {
+      bestDist = afterDist;
+      best = makePick(source, parentKey, siblingIndex(siblings, entry.block) + 1, "after", entry.block.to, blocks);
+    }
+  }
+  return best;
 }
 
 export function pickDropDestination(
