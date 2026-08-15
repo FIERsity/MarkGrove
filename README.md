@@ -8,7 +8,7 @@ MarkGrove 是一个无需账号、本地优先、可离线使用的 Markdown 网
 
 - 文件夹与笔记组成同一棵资料树；支持任意层级、折叠、重命名、移动、解散和级联回收。
 - Inbox、最近、收藏、全部笔记、标签与回收站组成轻量导航，不强迫用户先整理再写作。
-- 鼠标拖动和键盘移动使用同一套排序规则；可放到目标前后或文件夹内部，结构操作可在当前会话撤销。
+- 鼠标拖动和键盘移动使用同一套排序规则；可放到目标前后、文件夹内部或根目录，折叠文件夹会在悬停后自动展开，拖到树边缘会自动滚动，结构操作可在当前会话撤销。
 - `⌘/Ctrl K` 快速打开笔记或文件夹；侧栏可调宽、可折叠，并记住宽度。
 - 默认使用可直接编辑的 Live Preview：非活动内容呈现阅读排版，光标进入时显露 Markdown；同时保留源码、阅读与分栏校对。
 - 标题、强调、链接、引用、列表、代码和任务框都在同一个 CodeMirror 编辑状态中工作，切换视图不丢光标或撤销历史。
@@ -16,10 +16,10 @@ MarkGrove 是一个无需账号、本地优先、可离线使用的 Markdown 网
 - Markdown 结构会临时派生为可操作 Block；悬停段落可插入、拖动、上下移动、复制、删除或转换类型。拖动手柄可以把段落放进列表、把列表项移出，或在列表之间移动；键盘上下移动仍保持同一层级。
 - 空白段落输入 `/` 可插入标题、列表、任务、引用、代码、公式和分隔线；多段选区可整体上移或下移，所有结构操作进入同一撤销历史。
 - 可开关的本文大纲从标题实时生成；在 Live Preview/源码中定位编辑位置，在阅读视图中定位渲染标题，不向 Markdown 写入私有 ID。
-- 650ms 防抖自动保存；同一笔记的写入串行执行，持续写作时定期保留最近 20 个本地快照。
+- 650ms 防抖自动保存；同一笔记的写入串行执行，持续写作时定期保留最近 20 个本地快照。连接本地文件夹后，笔记保存和结构变更会以约 1.2 秒防抖串行镜像；`⌘/Ctrl S` 会立即保存并尝试同步。
 - 导入 `.md`、`.markdown`、`.txt`；导出标准 Markdown 与 YAML frontmatter。
 - 整库版本化 ZIP 备份会保留文件夹、顺序和笔记归属；ID 冲突会作为完整副本导入，不静默覆盖。
-- 可选连接一个本地文件夹，将当前工作区镜像为可读 Markdown 与 `.markgrove/manifest.json`。这是额外的本地副本，不是云同步；第一版只由 MarkGrove 向文件夹写入，外部改动不会自动合并。
+- 可选连接一个本地文件夹，将当前工作区持续镜像为可读 Markdown 与 `.markgrove/manifest.json`。这是额外的本地副本，不是云同步；仍只由 MarkGrove 向文件夹写入，外部改动不会自动合并。
 - 中英双语、浅色/深色主题、可安装 PWA 和离线应用外壳。语言切换与反馈入口在右上角；反馈只发送你填写的文字。
 - 默认不执行原始 HTML、不自动加载 Markdown 图片，外链只在用户点击时打开。
 
@@ -47,7 +47,7 @@ npm run check
 - IndexedDB 当前 schema 为 v3；v1/v2 数据库可原地升级，旧笔记会按稳定顺序进入根目录且正文、修订保持不变。
 - 单篇导出为带 YAML frontmatter 的标准 `.md` 文件。
 - 整库备份包含 `manifest.json` 与 `notes/*.md`，当前写出格式为 v2；恢复器继续显式兼容 v1。
-- 本地文件夹镜像写入 `.markgrove/manifest.json` 和层级化 `notes/**/*.md`，当前格式为 v1。它需要支持 File System Access API 的桌面浏览器；其他浏览器继续使用 ZIP 备份。
+- 本地文件夹镜像写入 `.markgrove/manifest.json` 和层级化 `notes/**/*.md`，当前格式为 v1；连接后由本地保存队列持续更新。它需要支持 File System Access API 的桌面浏览器；其他浏览器继续使用 ZIP 备份。
 - 单个 Markdown 文件上限 8 MiB，整库恢复包上限 50 MiB、最多 5,000 篇笔记。
 
 详细规范：[`v0.2 工作区`](docs/workspace-v0.2-spec.md) · [`v0.3 实时预览`](docs/live-preview-v0.3-spec.md) · [`v0.4 结构化写作`](docs/structured-writing-v0.4-spec.md)。
@@ -64,6 +64,6 @@ npm run check
 
 MarkGrove is a private, local-first Markdown notebook that lives in your browser. It needs no account, works offline, and keeps note text, titles, tags, search data, and revision snapshots in local IndexedDB.
 
-It includes a unified folder-and-note tree, pointer and keyboard reordering, quick open, an editable Live Preview backed by CodeMirror, local KaTeX math, Markdown-derived block controls, slash commands, a live outline, source and reading views, autosave, trash and restore, Markdown import/export, versioned ZIP backups, an optional local-folder Markdown mirror, bilingual UI, themes, and an installable PWA shell. The folder mirror is a user-authorized external copy, not cloud sync or bidirectional file sync. Language switching and feedback sit in the top-right corner; feedback sends only the text you type.
+It includes a unified folder-and-note tree, pointer and keyboard reordering, quick open, an editable Live Preview backed by CodeMirror, local KaTeX math, Markdown-derived block controls, slash commands, a live outline, source and reading views, autosave, trash and restore, Markdown import/export, versioned ZIP backups, an optional continuously queued local-folder Markdown mirror, bilingual UI, themes, and an installable PWA shell. The folder mirror is a user-authorized external copy, not cloud sync or bidirectional file sync; `⌘/Ctrl S` flushes the browser copy and attempts an immediate mirror. Language switching and feedback sit in the top-right corner; feedback sends only the text you type.
 
 Browser storage and persistent-storage permission are not backups. Keep a ZIP or local-folder mirror for important notes.

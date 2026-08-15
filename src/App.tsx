@@ -12,6 +12,8 @@ import { MoveDialog } from "./components/MoveDialog";
 import { OutlinePanel } from "./components/OutlinePanel";
 import { QuickOpenDialog } from "./components/QuickOpenDialog";
 import { WorkspaceTree, type TreeMoveRequest } from "./components/WorkspaceTree";
+import { DismissibleMenu } from "./components/DismissibleMenu";
+import { closeAllDismissibleMenus } from "./components/menuEvents";
 import { createBackup, downloadBlob, inspectBackup } from "./lib/backup";
 import { normalizeViewMode } from "./lib/editorMode";
 import { message, type MessageKey } from "./lib/i18n";
@@ -42,6 +44,7 @@ import type { MarkdownEditorHandle } from "./components/MarkdownEditor";
 import type { OutlineEntry } from "./lib/documentStructure";
 
 type SaveState = "saved" | "saving" | "failed";
+type MirrorState = "none" | "queued" | "syncing" | "synced" | "attention" | "error";
 type NodeTarget = { kind: WorkspaceItemKind; id: string };
 type ToastState = { id: number; message: string; undo?: () => Promise<void> };
 
@@ -83,6 +86,7 @@ export default function App() {
   const [localFolderName, setLocalFolderName] = useState<string | null>(null);
   const [localFolderBackupAt, setLocalFolderBackupAt] = useState<number | null>(null);
   const [localFolderBusy, setLocalFolderBusy] = useState(false);
+  const [mirrorState, setMirrorState] = useState<MirrorState>("none");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
@@ -104,6 +108,9 @@ export default function App() {
   const draftRef = useRef<NoteDraft | null>(null);
   const draftVersionRef = useRef(0);
   const saveTimerRef = useRef<number | null>(null);
+  const mirrorTimerRef = useRef<number | null>(null);
+  const mirrorChainRef = useRef<Promise<boolean>>(Promise.resolve(true));
+  const localFolderHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const reloadGeneration = useRef(0);
   const toastId = useRef(0);
   const undoHistoryRef = useRef<Array<() => Promise<void>>>([]);
@@ -156,7 +163,9 @@ export default function App() {
       setPersistent(await isStoragePersistent());
       setStorageEstimate(await estimateStorage());
       if (storedFolderHandle && typeof storedFolderHandle.getDirectoryHandle === "function") {
+        localFolderHandleRef.current = storedFolderHandle;
         setLocalFolderHandle(storedFolderHandle); setLocalFolderName(storedFolderHandle.name);
+        setMirrorState(await hasLocalFolderPermission(storedFolderHandle, false) ? (storedFolderBackup ? "synced" : "attention") : "attention");
       }
     })();
     return () => { cancelled = true; };
@@ -194,6 +203,45 @@ export default function App() {
     if (settingsOpen) void estimateStorage().then(setStorageEstimate);
   }, [settingsOpen]);
 
+  const mirrorWorkspaceNow = useCallback(async (requestPermission: boolean): Promise<boolean> => {
+    const handle = localFolderHandleRef.current;
+    if (!handle) { setMirrorState("none"); return false; }
+    if (!await hasLocalFolderPermission(handle, requestPermission)) {
+      setMirrorState("attention");
+      return false;
+    }
+    setMirrorState("syncing");
+    try {
+      const records = await listWorkspace();
+      await mirrorWorkspaceToLocalFolder(handle, records.notes, records.folders);
+      const now = Date.now();
+      setLocalFolderBackupAt(now);
+      await setSetting("localFolderBackupAt", now);
+      setMirrorState("synced");
+      return true;
+    } catch {
+      setMirrorState("error");
+      return false;
+    }
+  }, []);
+
+  const enqueueMirror = useCallback((requestPermission = false): Promise<boolean> => {
+    mirrorChainRef.current = mirrorChainRef.current.catch(() => false).then(() => mirrorWorkspaceNow(requestPermission));
+    return mirrorChainRef.current;
+  }, [mirrorWorkspaceNow]);
+
+  const queueMirror = useCallback((immediate = false, requestPermission = false): Promise<boolean> => {
+    if (!localFolderHandleRef.current) { setMirrorState("none"); return Promise.resolve(false); }
+    setMirrorState("queued");
+    if (mirrorTimerRef.current !== null) window.clearTimeout(mirrorTimerRef.current);
+    if (immediate) return enqueueMirror(requestPermission);
+    mirrorTimerRef.current = window.setTimeout(() => {
+      mirrorTimerRef.current = null;
+      void enqueueMirror(false);
+    }, 1200);
+    return Promise.resolve(true);
+  }, [enqueueMirror]);
+
   const flushDraft = useCallback(async () => {
     if (saveTimerRef.current !== null) { window.clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
     const current = draftRef.current;
@@ -203,12 +251,13 @@ export default function App() {
       const saved = await queueDraftSave(current);
       setNotes((items) => items.map((item) => item.id === saved.id ? saved : item));
       if (draftRef.current?.id === saved.id && draftVersionRef.current === version) setSaveState("saved");
+      queueMirror();
       return saved;
     } catch {
       if (draftRef.current?.id === current.id && draftVersionRef.current === version) setSaveState("failed");
       return null;
     }
-  }, []);
+  }, [queueMirror]);
 
   useEffect(() => {
     const handleVisibility = () => { if (document.visibilityState === "hidden") void flushDraft(); };
@@ -217,13 +266,26 @@ export default function App() {
     const handleOnline = () => setOnline(true); const handleOffline = () => setOnline(false);
     const handleUpdate = (event: Event) => setUpdateApp(() => (event as CustomEvent<() => void>).detail);
     const handleGlobalKey = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setQuickOpen(true); }
+      if (event.isComposing) return;
+      const target = event.target;
+      const editing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable);
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void (async () => {
+          const draftBeforeSave = draftRef.current;
+          const saved = await flushDraft();
+          if (draftBeforeSave && !saved) { showToast(t("saveFailed")); return; }
+          if (!localFolderHandleRef.current) { showToast(t("savedBrowserOnly")); return; }
+          const mirrored = await queueMirror(true, true);
+          showToast(t(mirrored ? "localFolderSynced" : "localFolderNeedsSync"));
+        })();
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k" && !editing && !settingsOpen && !feedbackOpen && !historyOpen && !moveTarget && !renameTarget && !backupPreview) { event.preventDefault(); closeAllDismissibleMenus(); setQuickOpen(true); }
       if ((event.metaKey || event.ctrlKey) && event.key === "\\") {
         event.preventDefault(); setSidebarCollapsed((value) => { void setSetting("sidebarCollapsed", !value); return !value; });
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z" && !event.shiftKey) {
-        const target = event.target;
-        const editing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable);
         if (!editing) {
           const undo = undoHistoryRef.current.pop();
           if (undo) { event.preventDefault(); setToast(null); void undo(); }
@@ -238,7 +300,11 @@ export default function App() {
       window.removeEventListener("online", handleOnline); window.removeEventListener("offline", handleOffline);
       window.removeEventListener("markgrove-update-available", handleUpdate); window.removeEventListener("keydown", handleGlobalKey);
     };
-  }, [flushDraft]);
+  }, [backupPreview, feedbackOpen, flushDraft, historyOpen, moveTarget, queueMirror, renameTarget, settingsOpen, t]);
+
+  useEffect(() => () => {
+    if (mirrorTimerRef.current !== null) window.clearTimeout(mirrorTimerRef.current);
+  }, []);
 
   const activeNote = useMemo(() => notes.find((note) => note.id === selectedNoteId) ?? null, [notes, selectedNoteId]);
   const hiddenFolders = useMemo(() => trashedFolderIds(folders), [folders]);
@@ -290,6 +356,7 @@ export default function App() {
     const tagsForNote = navigation.kind === "tag" ? [navigation.tag] : [];
     const note = await createNote(t("untitled"), "", tagsForNote, {}, parentId);
     await reloadWorkspace(); setNavigation(parentId === ROOT_FOLDER_ID ? { kind: "inbox" } : { kind: "folder", folderId: parentId });
+    queueMirror();
     if (parentId !== ROOT_FOLDER_ID) revealFolder(parentId);
     await openNote(note.id, true);
   }
@@ -298,6 +365,7 @@ export default function App() {
     const baseName = t("untitledFolder"); let nextName = baseName; let suffix = 2;
     while (usedNames.has(nextName.toLocaleLowerCase())) nextName = `${baseName} ${suffix++}`;
     const folder = await createFolder(nextName, parentId); await reloadWorkspace();
+    queueMirror();
     const next = new Set(expandedIds); next.add(parentId); setExpandedIds(next); void setSetting("expandedFolderIds", [...next]);
     pendingFolderIdRef.current = folder.id; setRenameTarget({ kind: "folder", id: folder.id }); setRenameValue(folder.name); setRenameError(null);
   }
@@ -306,9 +374,10 @@ export default function App() {
     await flushDraft();
     const original = await moveItem(request.kind, request.id, request.parentId, request.targetIndex);
     const records = await reloadWorkspace();
+    queueMirror();
     const name = request.kind === "note" ? records.notes.find((item) => item.id === request.id)?.title : records.folders.find((item) => item.id === request.id)?.name;
     if (request.parentId !== ROOT_FOLDER_ID) revealFolder(request.parentId);
-    showToast(t("moved", { name: name ?? "" }), async () => { await restoreItemLocation(original); await reloadWorkspace(); });
+    showToast(t("moved", { name: name ?? "" }), async () => { await restoreItemLocation(original); await reloadWorkspace(); queueMirror(); });
   }
 
   async function handleTrash(kind: WorkspaceItemKind, id: string) {
@@ -317,6 +386,7 @@ export default function App() {
     const name = kind === "note" ? notes.find((note) => note.id === id)?.title : folders.find((folder) => folder.id === id)?.name;
     if (kind === "note") await moveToTrash(id); else await trashFolder(id);
     const records = await reloadWorkspace();
+    queueMirror();
     if (selectedNoteId && !records.notes.some((note) => note.id === selectedNoteId && note.trashedAt === null && !trashedFolderIds(records.folders).has(note.parentId))) {
       setSelectedNoteId(null); setDraft(null); draftRef.current = null; setNavigation({ kind: "trash" });
     }
@@ -326,15 +396,16 @@ export default function App() {
       : t("trashed", { name: name ?? "" });
     showToast(trashMessage, async () => {
       if (kind === "note") await restoreNote(id); else await restoreFolder(id);
-      await restoreItemLocation(location); await reloadWorkspace();
+      await restoreItemLocation(location); await reloadWorkspace(); queueMirror();
     });
   }
 
   async function handleDissolve(id: string) {
     const folder = folders.find((item) => item.id === id); if (!folder) return;
     const snapshot = await dissolveFolder(id); await reloadWorkspace();
+    queueMirror();
     if (navigation.kind === "folder" && navigation.folderId === id) setNavigation(folder.parentId === ROOT_FOLDER_ID ? { kind: "inbox" } : { kind: "folder", folderId: folder.parentId });
-    showToast(t("dissolved", { name: folder.name }), async () => { await undoDissolveFolder(snapshot); await reloadWorkspace(); });
+    showToast(t("dissolved", { name: folder.name }), async () => { await undoDissolveFolder(snapshot); await reloadWorkspace(); queueMirror(); });
   }
 
   function requestRename(kind: WorkspaceItemKind, id: string) {
@@ -344,7 +415,7 @@ export default function App() {
   async function cancelRename() {
     const pendingFolderId = pendingFolderIdRef.current;
     pendingFolderIdRef.current = null; setRenameTarget(null); setRenameError(null);
-    if (pendingFolderId) { await deleteFolderForever(pendingFolderId); await reloadWorkspace(); }
+    if (pendingFolderId) { await deleteFolderForever(pendingFolderId); await reloadWorkspace(); queueMirror(); }
   }
   async function confirmRename() {
     if (!renameTarget) return;
@@ -359,21 +430,21 @@ export default function App() {
       if (note) await queueDraftSave({ ...asDraft(note), title: renameValue });
       if (draftRef.current?.id === renameTarget.id) { const next = { ...draftRef.current, title: renameValue }; draftRef.current = next; setDraft(next); }
     }
-    pendingFolderIdRef.current = null; setRenameError(null); setRenameTarget(null); await reloadWorkspace();
+    pendingFolderIdRef.current = null; setRenameError(null); setRenameTarget(null); await reloadWorkspace(); queueMirror();
   }
 
-  async function restoreTrashedNote(id: string) { await restoreNote(id); await reloadWorkspace(); showToast(language === "zh" ? "笔记已恢复" : "Note restored"); }
-  async function restoreTrashedFolder(id: string) { await restoreFolder(id); await reloadWorkspace(); showToast(language === "zh" ? "文件夹已恢复" : "Folder restored"); }
+  async function restoreTrashedNote(id: string) { await restoreNote(id); await reloadWorkspace(); queueMirror(); showToast(language === "zh" ? "笔记已恢复" : "Note restored"); }
+  async function restoreTrashedFolder(id: string) { await restoreFolder(id); await reloadWorkspace(); queueMirror(); showToast(language === "zh" ? "文件夹已恢复" : "Folder restored"); }
   async function deleteNote(id: string) {
     if (!window.confirm(t("destructiveDelete"))) return;
-    await deleteNoteForever(id); await reloadWorkspace();
+    await deleteNoteForever(id); await reloadWorkspace(); queueMirror();
   }
   async function deleteFolder(id: string) {
     const folder = folders.find((item) => item.id === id); if (!folder) return;
     const count = countFolderContents(id, folders, notes);
     const promptText = language === "zh" ? `将永久删除 ${count.folders} 个子文件夹和 ${count.notes} 篇笔记。请输入文件夹名“${folder.name}”确认：` : `This permanently deletes ${count.folders} subfolders and ${count.notes} notes. Type “${folder.name}” to confirm:`;
     if (window.prompt(promptText) !== folder.name) return;
-    await deleteFolderForever(id); await reloadWorkspace();
+    await deleteFolderForever(id); await reloadWorkspace(); queueMirror();
   }
 
   async function handleImport(files: FileList | null) {
@@ -386,7 +457,7 @@ export default function App() {
         await createNote(parsed.title, parsed.content, parsed.tags, parsed.frontmatter, parentId); imported += 1;
       } catch { skipped += 1; }
     }
-    await reloadWorkspace(); showToast(`${t("importDone", { count: imported })}${skipped ? t("importSkipped", { count: skipped }) : ""}`);
+    await reloadWorkspace(); queueMirror(); showToast(`${t("importDone", { count: imported })}${skipped ? t("importSkipped", { count: skipped }) : ""}`);
     if (markdownInputRef.current) markdownInputRef.current.value = "";
   }
   function handleExportNote() {
@@ -411,22 +482,23 @@ export default function App() {
     if (!backupPreview) return;
     const source = backupPreviewSource;
     await addImportedWorkspace(backupPreview.notes, backupPreview.folders); const count = backupPreview.notes.length;
-    setBackupPreview(null); setBackupPreviewSource("zip"); await reloadWorkspace(); showToast(t(source === "folder" ? "localFolderRestored" : "importDone", { count }));
+    setBackupPreview(null); setBackupPreviewSource("zip"); await reloadWorkspace(); queueMirror(); showToast(t(source === "folder" ? "localFolderRestored" : "importDone", { count }));
   }
 
   async function handleConnectLocalFolder() {
     if (!supportsLocalFolderBackup()) { showToast(t("localFolderUnsupported")); return; }
     setLocalFolderBusy(true);
     try {
-      await flushDraft();
+      const draftBeforeSave = draftRef.current;
+      const saved = await flushDraft();
+      if (draftBeforeSave && !saved) { showToast(t("saveFailed")); return; }
       const handle = await pickLocalFolder();
       if (!await hasLocalFolderPermission(handle, true)) throw new Error("LOCAL_FOLDER_PERMISSION");
-      const records = await listWorkspace();
-      await mirrorWorkspaceToLocalFolder(handle, records.notes, records.folders);
-      const now = Date.now();
-      setLocalFolderHandle(handle); setLocalFolderName(handle.name); setLocalFolderBackupAt(now);
-      await setSetting("localFolderHandle", handle); await setSetting("localFolderBackupAt", now);
-      setStorageEstimate(await estimateStorage()); showToast(t("localFolderBackedUp"));
+      localFolderHandleRef.current = handle;
+      setLocalFolderHandle(handle); setLocalFolderName(handle.name); setMirrorState("queued");
+      await setSetting("localFolderHandle", handle);
+      if (!await mirrorWorkspaceNow(false)) throw new Error("LOCAL_FOLDER_WRITE");
+      setStorageEstimate(await estimateStorage()); showToast(t("localFolderSynced"));
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       showToast(t("localFolderError"));
@@ -434,14 +506,14 @@ export default function App() {
   }
 
   async function handleMirrorLocalFolder() {
-    if (!localFolderHandle) return handleConnectLocalFolder();
+    if (!localFolderHandleRef.current) return handleConnectLocalFolder();
     setLocalFolderBusy(true);
     try {
-      if (!await hasLocalFolderPermission(localFolderHandle, true)) throw new Error("LOCAL_FOLDER_PERMISSION");
-      await flushDraft(); const records = await listWorkspace();
-      await mirrorWorkspaceToLocalFolder(localFolderHandle, records.notes, records.folders);
-      const now = Date.now(); setLocalFolderBackupAt(now); await setSetting("localFolderBackupAt", now);
-      showToast(t("localFolderBackedUp"));
+      const draftBeforeSave = draftRef.current;
+      const saved = await flushDraft();
+      if (draftBeforeSave && !saved) { showToast(t("saveFailed")); return; }
+      if (!await queueMirror(true, true)) throw new Error("LOCAL_FOLDER_WRITE");
+      showToast(t("localFolderSynced"));
     } catch { showToast(t("localFolderError")); }
     finally { setLocalFolderBusy(false); }
   }
@@ -454,7 +526,6 @@ export default function App() {
       if (!await hasLocalFolderPermission(handle, true)) throw new Error("LOCAL_FOLDER_PERMISSION");
       const preview = await readLocalFolderPreview(handle);
       const existingIds = new Set([...notes.map((note) => note.id), ...folders.map((folder) => folder.id)]);
-      setLocalFolderHandle(handle); setLocalFolderName(handle.name); await setSetting("localFolderHandle", handle);
       setBackupPreview({ ...preview, conflicts: [...preview.notes, ...preview.folders].filter((item) => existingIds.has(item.id)).length });
       setBackupPreviewSource("folder");
     } catch (error) {
@@ -467,7 +538,7 @@ export default function App() {
   }
   async function handleRestoreRevision(revision: RevisionRecord) {
     const restored = await restoreRevision(revision); const next = asDraft(restored);
-    draftRef.current = next; setDraft(next); setSelectedNoteId(restored.id); await reloadWorkspace(); setHistoryOpen(false);
+    draftRef.current = next; setDraft(next); setSelectedNoteId(restored.id); await reloadWorkspace(); queueMirror(); setHistoryOpen(false);
   }
   async function changeView(next: ViewMode) {
     setViewMode(next);
@@ -494,14 +565,23 @@ export default function App() {
   }
 
   const moveItemRecord = moveTarget ? (moveTarget.kind === "note" ? notes.find((note) => note.id === moveTarget.id) : folders.find((folder) => folder.id === moveTarget.id)) : null;
+  const mirrorMessageKey: MessageKey = mirrorState === "queued"
+    ? "localFolderMirrorQueued"
+    : mirrorState === "syncing"
+      ? "localFolderMirroring"
+      : mirrorState === "attention"
+        ? "localFolderMirrorAttention"
+        : mirrorState === "error"
+          ? "localFolderMirrorError"
+          : "localFolderSynced";
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-block"><span className="brand-mark"><BookOpenText size={20} /></span><div><strong>MarkGrove</strong><small>{t("brandTagline")}</small></div></div>
         <div className="topbar-status">
           <span className={`save-state ${saveState}`}><Check size={14} />{t(saveState === "saving" ? "saving" : saveState === "failed" ? "saveFailed" : "saved")}</span>
+          {localFolderName && <span className={`mirror-state ${mirrorState}`} title={t(mirrorMessageKey)}><HardDrive size={14} />{t(mirrorMessageKey)}</span>}
           <span title={online ? t("online") : t("offline")}>{online ? <Wifi size={15} /> : <WifiOff size={15} />}</span>
-          <button type="button" className="icon-button" aria-label={t(sidebarCollapsed ? "showSidebar" : "hideSidebar")} onClick={() => { setSidebarCollapsed(!sidebarCollapsed); void setSetting("sidebarCollapsed", !sidebarCollapsed); }}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button>
           <div className="lang-switch" role="group" aria-label={t("language")}>
             <button type="button" className={language === "zh" ? "active" : undefined} aria-pressed={language === "zh"} onClick={() => void changeLanguage("zh")}>{t("langZh")}</button>
             <button type="button" className={language === "en" ? "active" : undefined} aria-pressed={language === "en"} onClick={() => void changeLanguage("en")}>{t("langEn")}</button>
@@ -512,16 +592,17 @@ export default function App() {
       </header>
       {updateApp && <div className="update-banner"><span>{t("updateReady")}</span><button type="button" onClick={updateApp}>{t("updateNow")}</button></div>}
       <main className={`workspace ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}>
+        <button type="button" className="sidebar-toggle" aria-label={t(sidebarCollapsed ? "showSidebar" : "hideSidebar")} title={t(sidebarCollapsed ? "showSidebar" : "hideSidebar")} onClick={() => { setSidebarCollapsed(!sidebarCollapsed); void setSetting("sidebarCollapsed", !sidebarCollapsed); }}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button>
         {!sidebarCollapsed && <>
           <aside className="library-sidebar">
             <div className="sidebar-actions">
               <button type="button" className="primary-action" onClick={() => void handleNewNote()}><Plus size={17} />{t("newNote")}</button>
-              <details className="menu-details"><summary className="icon-button" aria-label={t("more")}><MoreHorizontal size={18} /></summary><div className="dropdown-menu" onClickCapture={(event) => { const details = event.currentTarget.closest("details"); if (details) details.open = false; }}>
+              <DismissibleMenu label={t("more")} className="icon-button" trigger={<MoreHorizontal size={18} />}>
                 <button type="button" onClick={() => void handleNewFolder()}><FolderPlus size={16} />{t("newFolder")}</button>
                 <button type="button" onClick={() => markdownInputRef.current?.click()}><FileUp size={16} />{t("importMarkdown")}</button>
                 <button type="button" onClick={() => void handleBackup()}><Download size={16} />{t("backup")}</button>
                 <button type="button" onClick={() => backupInputRef.current?.click()}><Upload size={16} />{t("restoreBackup")}</button>
-              </div></details>
+              </DismissibleMenu>
             </div>
             <button type="button" className="quick-open-button" onClick={() => setQuickOpen(true)}><Search size={16} /><span>{language === "zh" ? "快速打开" : "Quick open"}</span><kbd>⌘K</kbd></button>
             <nav className="library-nav" aria-label={language === "zh" ? "资料库" : "Library"}>
@@ -531,7 +612,7 @@ export default function App() {
                 ["all", t("allNotes"), notes.filter((note) => note.trashedAt === null && !hiddenFolders.has(note.parentId)).length],
               ] as const).map(([kind, label, count]) => <button type="button" key={kind} className={navigation.kind === kind ? "active" : ""} onClick={() => void navigate({ kind })}><FolderOpen size={15} />{label}{count !== null && <span>{count}</span>}</button>)}
             </nav>
-            <div className="tree-section-head"><span>{t("folders")}</span><details className="menu-details tree-add-menu"><summary className="tree-add-button" aria-label={t("addToGrove")}><Plus size={17} /></summary><div className="dropdown-menu align-right" onClickCapture={(event) => { const details = event.currentTarget.closest("details"); if (details) details.open = false; }}><button type="button" onClick={() => void handleNewNote(ROOT_FOLDER_ID)}><Plus size={16} />{t("newNote")}</button><button type="button" onClick={() => void handleNewFolder(ROOT_FOLDER_ID)}><FolderPlus size={16} />{t("newFolder")}</button></div></details></div>
+            <div className="tree-section-head"><span>{t("folders")}</span><DismissibleMenu label={t("addToGrove")} className="tree-add-button" menuClassName="tree-add-dropdown" align="right" trigger={<Plus size={17} />}><button type="button" onClick={() => void handleNewNote(ROOT_FOLDER_ID)}><Plus size={16} />{t("newNote")}</button><button type="button" onClick={() => void handleNewFolder(ROOT_FOLDER_ID)}><FolderPlus size={16} />{t("newFolder")}</button></DismissibleMenu></div>
             <WorkspaceTree
               folders={folders} notes={notes} expandedIds={expandedIds} selectedNoteId={selectedNoteId}
               selectedFolderId={!selectedNoteId && navigation.kind === "folder" ? navigation.folderId : null} language={language}
@@ -542,7 +623,7 @@ export default function App() {
             />
             {tags.length > 0 && <details className="tag-section"><summary><Tag size={13} />{t("tags")}</summary><div className="tag-filter">{tags.map(({ tag, count }) => <button type="button" className={navigation.kind === "tag" && navigation.tag === tag ? "active" : ""} key={tag} onClick={() => void navigate({ kind: "tag", tag })}>#{tag}<span>{count}</span></button>)}</div></details>}
             <button type="button" className={`trash-nav ${navigation.kind === "trash" ? "active" : ""}`} onClick={() => void navigate({ kind: "trash" })}><Trash2 size={15} />{t("trash")}<span>{notes.filter((note) => note.trashedAt !== null).length + folders.filter((folder) => folder.trashedAt !== null && !hiddenFolders.has(folder.parentId)).length}</span></button>
-            <div className="sidebar-foot"><HardDrive size={14} /><span>{t("localOnly")}</span><small>{localFolderName ? `${t("folderMirrorConnected")}: ${localFolderName}${localFolderBackupAt ? ` · ${dateLabel(localFolderBackupAt, language)}` : ""}` : lastBackup ? `${t("lastBackup")} ${dateLabel(lastBackup, language)}` : t("backupNever")}</small></div>
+            <div className="sidebar-foot"><HardDrive size={14} /><span>{t("localOnly")}</span><small>{localFolderName ? `${localFolderName} · ${t(mirrorMessageKey)}${localFolderBackupAt ? ` · ${dateLabel(localFolderBackupAt, language)}` : ""}` : lastBackup ? `${t("lastBackup")} ${dateLabel(lastBackup, language)}` : t("backupNever")}</small></div>
             <input ref={markdownInputRef} className="visually-hidden" type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple onChange={(event) => void handleImport(event.target.files)} />
             <input ref={backupInputRef} className="visually-hidden" type="file" accept=".zip,application/zip" onChange={(event) => void handleBackupFile(event.target.files?.[0])} />
           </aside>
@@ -563,15 +644,15 @@ export default function App() {
             </div>
             <div className="note-tools"><div className="view-switcher">{(["live", "source", "reading"] as const).map((mode) => <button type="button" key={mode} aria-pressed={viewMode === mode} title={mode === "reading" ? (language === "zh" ? "切换阅读视图（⌘/Ctrl E）" : "Toggle reading view (⌘/Ctrl E)") : undefined} className={viewMode === mode ? "active" : ""} onClick={() => void changeView(mode)}>{t(mode)}</button>)}</div>
               <button type="button" className={`icon-button ${outlineOpen ? "active" : ""}`} aria-pressed={outlineOpen} aria-label={language === "zh" ? "切换本文大纲" : "Toggle outline"} title={language === "zh" ? "本文大纲" : "Outline"} onClick={() => setOutlineOpen((current) => { const next = !current; void setSetting("outlineOpen", next); return next; })}><ListTree size={17} /></button>
-              <details className="menu-details note-menu"><summary className="icon-button" aria-label={t("more")}><Menu size={18} /><ChevronDown size={12} /></summary><div className="dropdown-menu align-right" onClickCapture={(event) => { const details = event.currentTarget.closest("details"); if (details) details.open = false; }}>
-                <button type="button" onClick={() => void setPinned(activeNote.id, !activeNote.pinned).then(reloadWorkspace)}>{activeNote.pinned ? <PinOff size={16} /> : <Pin size={16} />}{t(activeNote.pinned ? "unpin" : "pin")}</button>
-                <button type="button" onClick={async () => { await flushDraft(); const fresh = (await listWorkspace()).notes.find((note) => note.id === activeNote.id); if (fresh) { await duplicateNote(fresh, language === "zh" ? "副本" : "copy"); await reloadWorkspace(); } }}><FileDown size={16} />{t("duplicate")}</button>
+              <DismissibleMenu label={t("more")} className="icon-button" menuClassName="note-dropdown" align="right" trigger={<><Menu size={18} /><ChevronDown size={12} /></>}>
+                <button type="button" onClick={async () => { await setPinned(activeNote.id, !activeNote.pinned); await reloadWorkspace(); queueMirror(); }}>{activeNote.pinned ? <PinOff size={16} /> : <Pin size={16} />}{t(activeNote.pinned ? "unpin" : "pin")}</button>
+                <button type="button" onClick={async () => { await flushDraft(); const fresh = (await listWorkspace()).notes.find((note) => note.id === activeNote.id); if (fresh) { await duplicateNote(fresh, language === "zh" ? "副本" : "copy"); await reloadWorkspace(); queueMirror(); } }}><FileDown size={16} />{t("duplicate")}</button>
                 <button type="button" onClick={() => setMoveTarget({ kind: "note", id: activeNote.id })}>{t("moveTo")}</button>
                 <button type="button" onClick={() => void changeView("split")}><Columns2 size={16} />{t("split")}</button>
                 <button type="button" onClick={handleExportNote}><Download size={16} />{t("exportMarkdown")}</button>
                 <button type="button" onClick={() => void openHistory()}><Clock3 size={16} />{t("history")}</button>
                 <button type="button" className="danger" onClick={() => void handleTrash("note", activeNote.id)}><Trash2 size={16} />{t("moveToTrash")}</button>
-              </div></details>
+              </DismissibleMenu>
             </div>
           </header>
           <div className={`writing-shell ${outlineOpen && viewMode !== "split" ? "has-outline" : ""}`}>
@@ -600,7 +681,7 @@ export default function App() {
         <section className="storage-setting"><h3><HardDrive size={17} />{t("storage")}</h3><p>{t("storageIntro")}</p>
           <div className="storage-row"><strong>{t("browserProtection")}</strong><span>{t(persistent ? "storagePersistent" : "storageBestEffort")}</span>{!persistent && <button type="button" onClick={() => void requestPersistentStorage().then((value) => { setPersistent(value); showToast(value ? t("persistenceEnabled") : t("persistenceUnavailable")); })}>{t("requestPersistence")}</button>}</div>
           <div className="storage-row"><strong>{t("externalBackup")}</strong><span>{lastBackup ? `${t("lastBackup")}: ${dateLabel(lastBackup, language)}` : t("backupNever")}</span><button type="button" onClick={() => void handleBackup()}>{t("backup")}</button></div>
-          <div className="storage-row"><strong>{t("folderMirror")}</strong><span>{localFolderName ? `${t("folderMirrorConnected")}: ${localFolderName}${localFolderBackupAt ? ` · ${dateLabel(localFolderBackupAt, language)}` : ""}` : t("folderMirrorNotConnected")}</span><div className="storage-actions"><button type="button" disabled={localFolderBusy} onClick={() => void (localFolderHandle ? handleMirrorLocalFolder() : handleConnectLocalFolder())}>{localFolderBusy ? t("working") : localFolderHandle ? t("mirrorNow") : t("connectFolder")}</button><button type="button" disabled={localFolderBusy} onClick={() => void handleRestoreLocalFolder()}>{t("restoreFromFolder")}</button></div></div>
+          <div className="storage-row"><strong>{t("folderMirror")}</strong><span>{localFolderName ? `${t("folderMirrorConnected")}: ${localFolderName} · ${t(mirrorMessageKey)}${localFolderBackupAt ? ` · ${dateLabel(localFolderBackupAt, language)}` : ""}` : t("folderMirrorNotConnected")}</span><div className="storage-actions"><button type="button" disabled={localFolderBusy} onClick={() => void (localFolderHandle ? handleMirrorLocalFolder() : handleConnectLocalFolder())}>{localFolderBusy ? t("working") : localFolderHandle ? t("mirrorNow") : t("connectFolder")}</button><button type="button" disabled={localFolderBusy} onClick={() => void handleRestoreLocalFolder()}>{t("restoreFromFolder")}</button></div></div>
           <small>{t("storageClearWarning")}</small>
           <small>{t("storageUsage", { usage: formatBytes(storageEstimate.usage, language), quota: formatBytes(storageEstimate.quota, language) })}</small>
         </section>

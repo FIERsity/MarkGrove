@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  DndContext, DragOverlay, KeyboardSensor, PointerSensor, closestCenter,
-  useSensor, useSensors, type DragEndEvent, type DragOverEvent,
+  DndContext, DragOverlay, KeyboardSensor, PointerSensor, closestCenter, pointerWithin, useDroppable,
+  useSensor, useSensors, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent,
 } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronRight, FileText, Folder, FolderPlus, GripVertical, MoreHorizontal, Plus } from "lucide-react";
-import type { FolderRecord, Language, NoteRecord, WorkspaceItemKind } from "../types";
+import { ROOT_FOLDER_ID, type FolderRecord, type Language, type NoteRecord, type WorkspaceItemKind } from "../types";
 import { flattenWorkspaceTree, trashedFolderIds, type TreeNode } from "../lib/workspace";
+import { DismissibleMenu } from "./DismissibleMenu";
 
 export interface TreeMoveRequest {
   kind: WorkspaceItemKind;
@@ -54,11 +55,11 @@ function computeDrop(
   folders: FolderRecord[],
   notes: NoteRecord[],
 ): DropPreview {
-  if (over.kind === "folder" && ratio >= 0.25 && ratio <= 0.75) {
+  if (over.kind === "folder" && ratio >= 0.2 && ratio <= 0.8) {
     return {
       kind: active.kind, id: active.id, parentId: over.id,
       targetIndex: activeChildren(over.id, folders, notes, active.id).length,
-      overId: over.id, zone: "inside",
+      overId: `${over.kind}:${over.id}`, zone: "inside",
     };
   }
   const siblings = activeChildren(over.parentId, folders, notes, active.id);
@@ -66,7 +67,7 @@ function computeDrop(
   const after = ratio > 0.5;
   return {
     kind: active.kind, id: active.id, parentId: over.parentId,
-    targetIndex: overIndex + (after ? 1 : 0), overId: over.id, zone: after ? "after" : "before",
+    targetIndex: overIndex + (after ? 1 : 0), overId: `${over.kind}:${over.id}`, zone: after ? "after" : "before",
   };
 }
 
@@ -93,7 +94,9 @@ function TreeRow(props: RowProps) {
   const { node, selected, focused, preview, language } = props;
   const sortable = useSortable({ id: `${node.kind}:${node.id}`, data: { node } });
   const style = { transform: CSS.Transform.toString(sortable.transform), transition: sortable.transition };
-  const dropClass = preview?.overId === node.id ? ` drop-${preview.zone}` : "";
+  const nodeKey = `${node.kind}:${node.id}`;
+  const isDropTarget = preview?.overId === nodeKey;
+  const dropClass = isDropTarget ? ` drop-${preview.zone}` : "";
   return (
     <div
       ref={(element) => { sortable.setNodeRef(element); props.rowRef(element); }}
@@ -106,7 +109,6 @@ function TreeRow(props: RowProps) {
       tabIndex={focused ? 0 : -1}
       onFocus={props.onFocus}
       onKeyDown={props.onKeyDown}
-      onDoubleClick={props.onOpen}
     >
       <button type="button" tabIndex={-1} className="tree-chevron" aria-label={node.expanded ? "Collapse" : "Expand"} onClick={props.onToggle} disabled={node.kind !== "folder"}>
         {node.kind === "folder" && <ChevronRight size={15} className={node.expanded ? "expanded" : ""} />}
@@ -121,9 +123,7 @@ function TreeRow(props: RowProps) {
         <span>{node.name}</span>
       </button>
       {node.kind === "folder" && <button type="button" tabIndex={-1} className="tree-quick-action" aria-label={language === "zh" ? "在此新建笔记" : "New note here"} onClick={props.onNewNote}><Plus size={15} /></button>}
-      <details className="tree-menu menu-details">
-        <summary className="tree-more" aria-label={language === "zh" ? "更多" : "More"}><MoreHorizontal size={16} /></summary>
-        <div className="dropdown-menu tree-dropdown" onClickCapture={(event) => { const details = event.currentTarget.closest("details"); if (details) details.open = false; }}>
+      <DismissibleMenu label={language === "zh" ? "更多" : "More"} className="tree-more" menuClassName="tree-dropdown" align="right" trigger={<MoreHorizontal size={16} />}>
           {node.kind === "folder" && <>
             <button type="button" onClick={props.onNewNote}><Plus size={15} />{language === "zh" ? "新建笔记" : "New note"}</button>
             <button type="button" onClick={props.onNewFolder}><FolderPlus size={15} />{language === "zh" ? "新建子文件夹" : "New subfolder"}</button>
@@ -132,10 +132,15 @@ function TreeRow(props: RowProps) {
           <button type="button" onClick={props.onMoveDialog}>{language === "zh" ? "移动到…" : "Move to…"}</button>
           {node.kind === "folder" && <button type="button" onClick={props.onDissolve}>{language === "zh" ? "解散文件夹" : "Dissolve folder"}</button>}
           <button type="button" className="danger" onClick={props.onTrash}>{language === "zh" ? "移到回收站" : "Move to trash"}</button>
-        </div>
-      </details>
+      </DismissibleMenu>
+      {isDropTarget && preview?.zone === "inside" && <span className="tree-drop-label">{language === "zh" ? `移入“${node.name}”` : `Move into “${node.name}”`}</span>}
     </div>
   );
+}
+
+function RootDropZone({ active, language }: { active: boolean; language: Language }) {
+  const droppable = useDroppable({ id: "root-drop-zone", data: { root: true } });
+  return <div ref={droppable.setNodeRef} className={`tree-root-drop${active ? " active" : ""}`} aria-label={language === "zh" ? "移到我的墨林" : "Move to my grove"}>{language === "zh" ? "移到我的墨林" : "Move to my grove"}</div>;
 }
 
 export function WorkspaceTree(props: Props) {
@@ -146,6 +151,13 @@ export function WorkspaceTree(props: Props) {
   const [focusedId, setFocusedId] = useState<string | null>(props.selectedNoteId ?? props.selectedFolderId ?? nodes[0]?.id ?? null);
   const [keyboardMove, setKeyboardMove] = useState<TreeMoveRequest | null>(null);
   const expandTimer = useRef<number | null>(null);
+  const expandTargetRef = useRef<string | null>(null);
+  const pointerYRef = useRef<number | null>(null);
+  const pointerDragRef = useRef(false);
+  const pointerStartYRef = useRef<number | null>(null);
+  const dragLayoutRef = useRef(new Map<string, { top: number; height: number }>());
+  const treeRef = useRef<HTMLDivElement>(null);
+  const dragScrollTopRef = useRef(0);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -157,6 +169,25 @@ export function WorkspaceTree(props: Props) {
     setFocusedId(props.selectedNoteId ?? props.selectedFolderId ?? nodes[0]?.id ?? null);
   }, [focusedId, nodes, props.selectedFolderId, props.selectedNoteId]);
   useEffect(() => () => { if (expandTimer.current !== null) window.clearTimeout(expandTimer.current); }, []);
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent | MouseEvent) => {
+      pointerYRef.current = event.clientY;
+      if (!pointerDragRef.current) return;
+      const tree = treeRef.current;
+      if (!tree) return;
+      const rect = tree.getBoundingClientRect();
+      const edge = 42;
+      const maxStep = 16;
+      const distance = event.clientY < rect.top + edge
+        ? event.clientY - (rect.top + edge)
+        : event.clientY > rect.bottom - edge
+          ? event.clientY - (rect.bottom - edge)
+          : 0;
+      if (distance) tree.scrollTop += Math.max(-maxStep, Math.min(maxStep, distance * 0.4));
+    };
+    window.addEventListener("pointermove", handlePointerMove);
+    return () => window.removeEventListener("pointermove", handlePointerMove);
+  }, []);
 
   function toggle(node: TreeNode) {
     if (node.kind !== "folder") return;
@@ -239,30 +270,53 @@ export function WorkspaceTree(props: Props) {
     } else if (event.key === "F2") { event.preventDefault(); props.onRename(node.kind, node.id); }
   }
 
+  function clearExpandTimer() {
+    if (expandTimer.current !== null) window.clearTimeout(expandTimer.current);
+    expandTimer.current = null;
+    expandTargetRef.current = null;
+  }
+
   function updatePreview(event: DragOverEvent) {
     const active = nodeByKey.get(String(event.active.id));
+    if (String(event.over?.id) === "root-drop-zone" && active) {
+      setPreview({ kind: active.kind, id: active.id, parentId: ROOT_FOLDER_ID, targetIndex: activeChildren(ROOT_FOLDER_ID, props.folders, props.notes, active.id).length, overId: "root-drop-zone", zone: "inside" });
+      clearExpandTimer();
+      return;
+    }
     const over = event.over ? nodeByKey.get(String(event.over.id)) : null;
-    if (!active || !over || active.id === over.id) { setPreview(null); return; }
+    if (!active || !over || (active.id === over.id && active.kind === over.kind)) { clearExpandTimer(); setPreview(null); return; }
     const translated = event.active.rect.current.translated;
-    const center = translated ? translated.top + translated.height / 2 : event.over!.rect.top + event.over!.rect.height / 2;
-    const ratio = (center - event.over!.rect.top) / Math.max(1, event.over!.rect.height);
+    const center = pointerDragRef.current && pointerYRef.current !== null
+        ? pointerYRef.current
+      : translated ? translated.top + translated.height / 2 : event.over!.rect.top + event.over!.rect.height / 2;
+    const layout = pointerDragRef.current ? dragLayoutRef.current.get(String(event.over!.id)) : null;
+    const scrollDelta = (treeRef.current?.scrollTop ?? dragScrollTopRef.current) - dragScrollTopRef.current;
+    const overTop = layout ? layout.top - scrollDelta : event.over!.rect.top;
+    const overHeight = layout?.height ?? event.over!.rect.height;
+    const ratio = (center - overTop) / Math.max(1, overHeight);
     const next = computeDrop(active, over, ratio, props.folders, props.notes);
     const invalid = active.kind === "folder" && (next.parentId === active.id || isDescendant(next.parentId, active.id, props.folders));
     setPreview(invalid ? null : next);
-    if (expandTimer.current !== null) window.clearTimeout(expandTimer.current);
     if (!invalid && next.zone === "inside" && over.kind === "folder" && !props.expandedIds.has(over.id)) {
-      expandTimer.current = window.setTimeout(() => {
-        const expanded = new Set(props.expandedIds); expanded.add(over.id); props.onExpandedChange(expanded);
-      }, 650);
+      if (expandTargetRef.current !== over.id) {
+        if (expandTimer.current !== null) window.clearTimeout(expandTimer.current);
+        expandTargetRef.current = over.id;
+        expandTimer.current = window.setTimeout(() => {
+          const expanded = new Set(props.expandedIds); expanded.add(over.id); props.onExpandedChange(expanded);
+          expandTimer.current = null;
+        }, 500);
+      }
+    } else {
+      clearExpandTimer();
     }
   }
 
   function finishDrag(event: DragEndEvent) {
-    if (expandTimer.current !== null) window.clearTimeout(expandTimer.current);
+    clearExpandTimer();
     const request = preview;
     setActiveKey(null); setPreview(null);
     if (!event.over || !request) return;
-    if (request.zone === "inside") {
+    if (request.zone === "inside" && request.parentId !== ROOT_FOLDER_ID) {
       const expanded = new Set(props.expandedIds); expanded.add(request.parentId); props.onExpandedChange(expanded);
     }
     void props.onMove(request);
@@ -271,9 +325,23 @@ export function WorkspaceTree(props: Props) {
   const activeNode = activeKey ? nodeByKey.get(activeKey) : null;
   return (
     <DndContext
-      sensors={sensors} collisionDetection={closestCenter}
-      onDragStart={(event) => setActiveKey(String(event.active.id))}
-      onDragOver={updatePreview} onDragCancel={() => { setActiveKey(null); setPreview(null); }} onDragEnd={finishDrag}
+      sensors={sensors} collisionDetection={(args) => {
+        const pointerHits = pointerWithin(args);
+        return pointerHits.length > 0 ? pointerHits : closestCenter(args);
+      }}
+      onDragStart={(event: DragStartEvent) => {
+        pointerDragRef.current = !(event.activatorEvent instanceof KeyboardEvent);
+        pointerStartYRef.current = pointerDragRef.current && event.activatorEvent instanceof MouseEvent ? event.activatorEvent.clientY : null;
+        pointerYRef.current = pointerStartYRef.current;
+        dragScrollTopRef.current = treeRef.current?.scrollTop ?? 0;
+        dragLayoutRef.current = new Map([...rowRefs.current.entries()].map(([key, element]) => {
+          const rect = element.getBoundingClientRect();
+          return [key, { top: rect.top, height: rect.height }];
+        }));
+        setActiveKey(String(event.active.id));
+      }}
+      onDragMove={(event: DragMoveEvent) => { if (pointerDragRef.current && pointerStartYRef.current !== null) pointerYRef.current = pointerStartYRef.current + event.delta.y; }}
+      onDragOver={updatePreview} onDragCancel={() => { clearExpandTimer(); pointerDragRef.current = false; pointerStartYRef.current = null; pointerYRef.current = null; dragLayoutRef.current.clear(); dragScrollTopRef.current = 0; setActiveKey(null); setPreview(null); }} onDragEnd={(event) => { pointerDragRef.current = false; pointerStartYRef.current = null; pointerYRef.current = null; dragLayoutRef.current.clear(); dragScrollTopRef.current = 0; finishDrag(event); }}
       accessibility={{
         screenReaderInstructions: { draggable: props.language === "zh" ? "按空格或回车拾起，方向键移动，再按空格或回车放下，Escape 取消。" : "Press space or enter to pick up, use arrow keys to move, press space or enter to drop, and Escape to cancel." },
         announcements: {
@@ -287,7 +355,10 @@ export function WorkspaceTree(props: Props) {
           },
           onDragEnd({ active, over }) {
             const source = nodeByKey.get(String(active.id)); const target = over ? nodeByKey.get(String(over.id)) : null;
-            return props.language === "zh" ? `已将${source?.name ?? "项目"}放到${target?.name ?? "原位置"}` : `Dropped ${source?.name ?? "item"} at ${target?.name ?? "its original position"}`;
+            const inside = preview?.zone === "inside";
+            return props.language === "zh"
+              ? inside ? `已将${source?.name ?? "项目"}移入${target?.name ?? "目标文件夹"}` : `已将${source?.name ?? "项目"}放到${target?.name ?? "原位置"}`
+              : inside ? `Moved ${source?.name ?? "item"} into ${target?.name ?? "the target folder"}` : `Dropped ${source?.name ?? "item"} at ${target?.name ?? "its original position"}`;
           },
           onDragCancel({ active }) {
             const node = nodeByKey.get(String(active.id));
@@ -296,7 +367,8 @@ export function WorkspaceTree(props: Props) {
         },
       }}
     >
-      <div className="workspace-tree" role="tree" aria-label={props.language === "zh" ? "文件夹和笔记" : "Folders and notes"}>
+      <div ref={treeRef} className="workspace-tree" role="tree" aria-label={props.language === "zh" ? "文件夹和笔记" : "Folders and notes"}>
+        <RootDropZone active={preview?.overId === "root-drop-zone"} language={props.language} />
         <SortableContext items={nodes.map((node) => `${node.kind}:${node.id}`)} strategy={verticalListSortingStrategy}>
           {nodes.map((node, index) => (
             <div key={`${node.kind}:${node.id}`}>
