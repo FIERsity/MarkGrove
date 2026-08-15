@@ -3,12 +3,59 @@ import { EditorSelection, StateEffect, StateField, Transaction, type Extension }
 import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import type { Language } from "../types";
 import {
-  blockAtPosition, buildBlockGraph, convertBlock, deleteBlock, duplicateBlock, moveBlock, moveBlockToIndex, moveSingleBlock, siblingsFor,
-  type BlockKind, type BlockRef, type ConvertibleBlockKind, type StructureEdit,
+  blockAtPosition, buildBlockGraph, convertBlock, deleteBlock, dropBlock, duplicateBlock, moveBlock, moveSingleBlock, pickDropDestination,
+  type BlockBox, type BlockKind, type BlockRef, type ConvertibleBlockKind, type DropHint, type DropPick, type DropStatus, type StructureEdit,
 } from "../lib/documentStructure";
 
 const BLOCK_MIME = "application/x-markgrove-block";
-const dropTargetEffect = StateEffect.define<{ position: number; side: "before" | "after" } | null>();
+
+interface DropGuide {
+  pos: number;
+  side: "before" | "after";
+  hint: DropHint;
+  status: DropStatus;
+  language: Language;
+}
+
+const dropTargetEffect = StateEffect.define<DropGuide | null>();
+
+function dropLabel(hint: DropHint, language: Language): string {
+  if (hint === "become-list-item") return language === "zh" ? "变成列表项" : "Become a list item";
+  if (hint === "leave-list") return language === "zh" ? "移出列表" : "Move out of list";
+  if (hint === "join-list") return language === "zh" ? "加入列表" : "Join this list";
+  if (hint === "forbidden") return language === "zh" ? "无法放在这里" : "Can't drop here";
+  return "";
+}
+
+class DropGuideWidget extends WidgetType {
+  readonly hint: DropHint;
+  readonly status: DropStatus;
+  readonly language: Language;
+  constructor(hint: DropHint, status: DropStatus, language: Language) {
+    super();
+    this.hint = hint;
+    this.status = status;
+    this.language = language;
+  }
+  eq(other: DropGuideWidget) { return other.hint === this.hint && other.status === this.status && other.language === this.language; }
+  toDOM() {
+    const guide = document.createElement("div");
+    guide.className = `cm-block-drop-guide${this.status === "forbidden" ? " is-forbidden" : this.hint === "reorder" ? "" : " is-convert"}`;
+    guide.contentEditable = "false";
+    const bar = document.createElement("span");
+    bar.className = "cm-block-drop-bar";
+    guide.append(bar);
+    const label = dropLabel(this.hint, this.language);
+    if (label) {
+      const text = document.createElement("span");
+      text.className = "cm-block-drop-label";
+      text.textContent = label;
+      guide.append(text);
+    }
+    return guide;
+  }
+  ignoreEvent() { return true; }
+}
 
 const dropTargetField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
@@ -16,9 +63,14 @@ const dropTargetField = StateField.define<DecorationSet>({
     value = value.map(transaction.changes);
     for (const effect of transaction.effects) {
       if (!effect.is(dropTargetEffect)) continue;
-      if (!effect.value) return Decoration.none;
-      const line = transaction.state.doc.lineAt(effect.value.position);
-      return Decoration.set([Decoration.line({ class: `cm-block-drop-${effect.value.side}` }).range(line.from)]);
+      if (!effect.value || effect.value.status === "noop") return Decoration.none;
+      return Decoration.set([
+        Decoration.widget({
+          widget: new DropGuideWidget(effect.value.hint, effect.value.status, effect.value.language),
+          side: effect.value.side === "before" ? -1 : 1,
+          block: true,
+        }).range(effect.value.pos),
+      ]);
     }
     return value;
   },
@@ -136,36 +188,59 @@ function blockControlDecorations(view: EditorView, language: Language, onDragSta
   return Decoration.set(decorations, true);
 }
 
-function blockPositionFromPointer(event: DragEvent, view: EditorView): number | null {
-  const target = event.target instanceof HTMLElement ? event.target : null;
-  const controlsElement = target?.closest<HTMLElement>("[data-block-from]");
-  if (controlsElement) {
-    const from = Number(controlsElement.dataset.blockFrom);
-    if (Number.isFinite(from)) return from;
-  }
-  return view.posAtCoords({ x: event.clientX, y: event.clientY });
+function blockBox(view: EditorView, block: BlockRef): BlockBox | null {
+  const start = view.coordsAtPos(block.from);
+  const end = view.coordsAtPos(Math.max(block.from, Math.min(block.to, view.state.doc.length)));
+  if (!start || !end) return null;
+  const top = Math.min(start.top, end.top);
+  const bottom = Math.max(start.bottom, end.bottom);
+  return bottom > top ? { top, bottom } : { top, bottom: top + 18 };
 }
 
-function pointerIsAfterTarget(event: DragEvent, view: EditorView, blocks: readonly BlockRef[], sourceFrom: number, targetFrom: number): boolean {
-  const target = event.target instanceof HTMLElement ? event.target : null;
-  if (target?.closest(".cm-block-handle")) {
-    const source = blockAtPosition(blocks, sourceFrom);
-    const dropTarget = blockAtPosition(blocks, targetFrom);
-    if (source && dropTarget) {
-      const siblings = siblingsFor(blocks, source);
-      const sourceIndex = siblings.findIndex((block) => block.key === source.key);
-      const targetIndex = siblings.findIndex((block) => block.key === dropTarget.key);
-      if (sourceIndex >= 0 && targetIndex >= 0) return sourceIndex < targetIndex;
-    }
-  }
-  const dropTarget = blockAtPosition(blocks, targetFrom);
-  const start = dropTarget ? view.coordsAtPos(dropTarget.from) : null;
-  const end = dropTarget ? view.coordsAtPos(dropTarget.to) : null;
-  return event.clientY > ((start?.top ?? event.clientY) + (end?.bottom ?? event.clientY)) / 2;
+function pickFromPointer(view: EditorView, sourceFrom: number, clientY: number): DropPick | null {
+  const blocks = buildBlockGraph(view.state);
+  const source = blockAtPosition(blocks, sourceFrom);
+  if (!source) return null;
+  return pickDropDestination(source, blocks, clientY, (block) => blockBox(view, block));
+}
+
+function slotKey(pick: DropPick | null): string {
+  if (!pick) return "none";
+  return `${pick.dest.parentKey}:${pick.dest.index}:${pick.side}:${pick.status}:${pick.hint}`;
+}
+
+function setDragState(view: EditorView, dragging: boolean, forbidden = false) {
+  view.dom.classList.toggle("is-block-dragging", dragging);
+  view.dom.classList.toggle("is-drop-forbidden", dragging && forbidden);
+}
+
+function autoScroll(view: EditorView, clientY: number) {
+  const scroller = view.scrollDOM;
+  const rect = scroller.getBoundingClientRect();
+  const edge = 48;
+  const max = 22;
+  if (clientY < rect.top + edge) scroller.scrollTop -= Math.max(4, Math.ceil((1 - Math.max(0, clientY - rect.top) / edge) * max));
+  else if (clientY > rect.bottom - edge) scroller.scrollTop += Math.max(4, Math.ceil((1 - Math.max(0, rect.bottom - clientY) / edge) * max));
 }
 
 export function blockControlsExtension(language: Language): Extension {
   let dragSourceFrom: number | null = null;
+  let lastSlot = "";
+  const showGuide = (view: EditorView, pick: DropPick | null) => {
+    const key = slotKey(pick);
+    if (key === lastSlot) return;
+    lastSlot = key;
+    const guide = pick && pick.status !== "noop"
+      ? { pos: pick.pos, side: pick.side, hint: pick.hint, status: pick.status, language }
+      : null;
+    view.dispatch({ effects: dropTargetEffect.of(guide) });
+  };
+  const finishDrag = (view: EditorView) => {
+    dragSourceFrom = null;
+    lastSlot = "";
+    setDragState(view, false);
+    view.dispatch({ effects: dropTargetEffect.of(null) });
+  };
   const onDragStart = (event: DragEvent, from: number, view: EditorView) => {
     if (!event.dataTransfer || view.composing) {
       event.preventDefault();
@@ -174,6 +249,9 @@ export function blockControlsExtension(language: Language): Extension {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData(BLOCK_MIME, String(from));
     dragSourceFrom = from;
+    lastSlot = "";
+    view.dom.querySelectorAll(".cm-block-controls.menu-open").forEach((element) => element.classList.remove("menu-open"));
+    setDragState(view, true);
   };
   const controls = ViewPlugin.fromClass(class {
     decorations: DecorationSet;
@@ -205,44 +283,36 @@ export function blockControlsExtension(language: Language): Extension {
         }
         return false;
       },
+      dragenter(event) {
+        if (!event.dataTransfer?.types.includes(BLOCK_MIME)) return false;
+        event.preventDefault();
+        return true;
+      },
       dragover(event, view) {
         if (!event.dataTransfer?.types.includes(BLOCK_MIME)) return false;
         event.preventDefault();
+        autoScroll(view, event.clientY);
         const sourceFrom = dragSourceFrom;
-        const position = blockPositionFromPointer(event, view);
-        if (position === null || sourceFrom === null || !Number.isFinite(sourceFrom)) return true;
-        const blocks = buildBlockGraph(view.state);
-        const source = blockAtPosition(blocks, sourceFrom);
-        const target = blockAtPosition(blocks, position);
-        if (!source || !target || source.parentKey !== target.parentKey) {
-          view.dispatch({ effects: dropTargetEffect.of(null) });
+        if (sourceFrom === null) {
+          event.dataTransfer.dropEffect = "none";
           return true;
         }
-        const side = pointerIsAfterTarget(event, view, blocks, sourceFrom, position) ? "after" : "before";
-        view.dispatch({ effects: dropTargetEffect.of({ position: side === "before" ? target.from : target.to, side }) });
+        const pick = pickFromPointer(view, sourceFrom, event.clientY);
+        event.dataTransfer.dropEffect = pick?.status === "legal" ? "move" : "none";
+        setDragState(view, true, pick?.status === "forbidden");
+        showGuide(view, pick);
         return true;
       },
       drop(event, view) {
         if (!event.dataTransfer?.types.includes(BLOCK_MIME)) return false;
         event.preventDefault();
         const sourceFrom = dragSourceFrom ?? Number(event.dataTransfer.getData(BLOCK_MIME));
-        const position = blockPositionFromPointer(event, view);
-        view.dispatch({ effects: dropTargetEffect.of(null) });
-        dragSourceFrom = null;
-        if (position === null || !Number.isFinite(sourceFrom)) return true;
-        const blocks = buildBlockGraph(view.state);
-        const source = blockAtPosition(blocks, sourceFrom);
-        const target = blockAtPosition(blocks, position);
-        if (!source || !target || source.parentKey !== target.parentKey) return true;
-        const siblings = siblingsFor(blocks, source);
-        const sourceIndex = siblings.findIndex((block) => block.key === source.key);
-        const targetIndex = siblings.findIndex((block) => block.key === target.key);
-        const after = pointerIsAfterTarget(event, view, blocks, sourceFrom, position);
-        const destination = after ? targetIndex + (sourceIndex > targetIndex ? 1 : 0) : targetIndex - (sourceIndex < targetIndex ? 1 : 0);
-        applyEdit(view, moveBlockToIndex(view.state, sourceFrom, destination), "move.block.drop");
+        const pick = Number.isFinite(sourceFrom) ? pickFromPointer(view, sourceFrom, event.clientY) : null;
+        finishDrag(view);
+        if (pick?.status === "legal") applyEdit(view, dropBlock(view.state, sourceFrom, pick.dest), "move.block.drop");
         return true;
       },
-      dragend(_event, view) { dragSourceFrom = null; view.dispatch({ effects: dropTargetEffect.of(null) }); return false; },
+      dragend(_event, view) { finishDrag(view); return false; },
     },
   });
 
