@@ -3,7 +3,7 @@ import {
   ArchiveRestore, BookOpenText, Check, ChevronDown, ChevronRight, Clock3, Columns2, Download,
   FileDown, FileUp, FolderOpen, FolderPlus, HardDrive, Languages, Menu, MessageSquare, Moon,
   ListTree, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, RotateCcw,
-  Search, Settings, Sun, Tag, Trash2, Upload, Wifi, WifiOff,
+  Search, Settings, Sun, Tag, Trash2, Upload,
 } from "lucide-react";
 import { FeedbackDialog } from "./components/FeedbackDialog";
 import { LibraryOverview } from "./components/LibraryOverview";
@@ -16,6 +16,7 @@ import { DismissibleMenu } from "./components/DismissibleMenu";
 import { closeAllDismissibleMenus } from "./components/menuEvents";
 import { createBackup, downloadBlob, inspectBackup } from "./lib/backup";
 import { normalizeViewMode } from "./lib/editorMode";
+import { isLikelyIPad, quickOpenShortcutHint } from "./lib/keyboardHints";
 import { message, type MessageKey } from "./lib/i18n";
 import {
   hasLocalFolderPermission, mirrorWorkspaceToLocalFolder, pickLocalFolder, readLocalFolderPreview,
@@ -78,7 +79,8 @@ export default function App() {
   const [language, setLanguage] = useState<Language>(preferredLanguage());
   const [theme, setTheme] = useState<Theme>("light");
   const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [online, setOnline] = useState(navigator.onLine);
+  const [hasFineInput, setHasFineInput] = useState(false);
+  const [physicalKeyboardSeen, setPhysicalKeyboardSeen] = useState(false);
   const [persistent, setPersistent] = useState(false);
   const [lastBackup, setLastBackup] = useState<number | null>(null);
   const [storageEstimate, setStorageEstimate] = useState<StorageEstimate>({ usage: null, quota: null });
@@ -123,6 +125,13 @@ export default function App() {
   const editorRef = useRef<MarkdownEditorHandle>(null);
   const lastEditingModeRef = useRef<EditorAppearance>("live");
   const t = useCallback((key: MessageKey, values?: Record<string, string | number>) => message(language, key, values), [language]);
+  const quickOpenShortcut = useMemo(() => quickOpenShortcutHint({
+    platform: navigator.platform,
+    userAgent: navigator.userAgent,
+    maxTouchPoints: navigator.maxTouchPoints,
+    hasFineInput,
+    physicalKeyboardSeen,
+  }), [hasFineInput, physicalKeyboardSeen]);
 
   const reloadWorkspace = useCallback(async () => {
     const generation = ++reloadGeneration.current;
@@ -172,6 +181,14 @@ export default function App() {
   }, []);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; document.documentElement.lang = language === "zh" ? "zh-CN" : "en"; }, [language, theme]);
+  useEffect(() => {
+    const finePointer = window.matchMedia("(any-pointer: fine)");
+    const hoverPointer = window.matchMedia("(any-hover: hover)");
+    const update = () => setHasFineInput(finePointer.matches || hoverPointer.matches);
+    update();
+    finePointer.addEventListener("change", update); hoverPointer.addEventListener("change", update);
+    return () => { finePointer.removeEventListener("change", update); hoverPointer.removeEventListener("change", update); };
+  }, []);
   useEffect(() => {
     const toggleReading = (event: KeyboardEvent) => {
       const target = event.target instanceof HTMLElement ? event.target : null;
@@ -263,10 +280,10 @@ export default function App() {
     const handleVisibility = () => { if (document.visibilityState === "hidden") void flushDraft(); };
     const handlePageHide = () => { void flushDraft(); };
     const handleBeforeUnload = () => { void flushDraft(); };
-    const handleOnline = () => setOnline(true); const handleOffline = () => setOnline(false);
     const handleUpdate = (event: Event) => setUpdateApp(() => (event as CustomEvent<() => void>).detail);
     const handleGlobalKey = (event: KeyboardEvent) => {
       if (event.isComposing) return;
+      if (isLikelyIPad({ platform: navigator.platform, userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints })) setPhysicalKeyboardSeen(true);
       const target = event.target;
       const editing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable);
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "s") {
@@ -293,11 +310,9 @@ export default function App() {
       }
     };
     document.addEventListener("visibilitychange", handleVisibility); window.addEventListener("pagehide", handlePageHide); window.addEventListener("beforeunload", handleBeforeUnload);
-    window.addEventListener("online", handleOnline); window.addEventListener("offline", handleOffline);
     window.addEventListener("markgrove-update-available", handleUpdate); window.addEventListener("keydown", handleGlobalKey);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibility); window.removeEventListener("pagehide", handlePageHide); window.removeEventListener("beforeunload", handleBeforeUnload);
-      window.removeEventListener("online", handleOnline); window.removeEventListener("offline", handleOffline);
       window.removeEventListener("markgrove-update-available", handleUpdate); window.removeEventListener("keydown", handleGlobalKey);
     };
   }, [backupPreview, feedbackOpen, flushDraft, historyOpen, moveTarget, queueMirror, renameTarget, settingsOpen, t]);
@@ -581,7 +596,6 @@ export default function App() {
         <div className="topbar-status">
           <span className={`save-state ${saveState}`}><Check size={14} />{t(saveState === "saving" ? "saving" : saveState === "failed" ? "saveFailed" : "saved")}</span>
           {localFolderName && <span className={`mirror-state ${mirrorState}`} title={t(mirrorMessageKey)}><HardDrive size={14} />{t(mirrorMessageKey)}</span>}
-          <span title={online ? t("online") : t("offline")}>{online ? <Wifi size={15} /> : <WifiOff size={15} />}</span>
           <div className="lang-switch" role="group" aria-label={t("language")}>
             <button type="button" className={language === "zh" ? "active" : undefined} aria-pressed={language === "zh"} onClick={() => void changeLanguage("zh")}>{t("langZh")}</button>
             <button type="button" className={language === "en" ? "active" : undefined} aria-pressed={language === "en"} onClick={() => void changeLanguage("en")}>{t("langEn")}</button>
@@ -605,7 +619,7 @@ export default function App() {
               </DismissibleMenu>
               <button type="button" className="sidebar-action-icon" aria-label={t("hideSidebar")} title={t("hideSidebar")} onClick={() => { setSidebarCollapsed(true); void setSetting("sidebarCollapsed", true); }}><PanelLeftClose size={18} /></button>
             </div>
-            <button type="button" className="quick-open-button" onClick={() => setQuickOpen(true)}><Search size={16} /><span>{language === "zh" ? "快速打开" : "Quick open"}</span><kbd>⌘K</kbd></button>
+            <button type="button" className="quick-open-button" onClick={() => setQuickOpen(true)}><Search size={16} /><span>{language === "zh" ? "快速打开" : "Quick open"}</span>{quickOpenShortcut && <kbd>{quickOpenShortcut}</kbd>}</button>
             <nav className="library-nav" aria-label={language === "zh" ? "资料库" : "Library"}>
               {([
                 ["inbox", t("inbox"), notes.filter((note) => note.trashedAt === null && note.parentId === ROOT_FOLDER_ID).length],
