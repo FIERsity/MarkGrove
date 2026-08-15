@@ -1,13 +1,16 @@
 import { syntaxTree } from "@codemirror/language";
 import { keymap } from "@codemirror/view";
-import { Range, StateField, type EditorState, type Extension } from "@codemirror/state";
+import { Prec, Range, StateField, type EditorState, type Extension } from "@codemirror/state";
 import {
   Decoration, EditorView, ViewPlugin, WidgetType,
   type DecorationSet, type ViewUpdate,
 } from "@codemirror/view";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import type { Language } from "../types";
-import { buildLiveInlinePlan, buildLiveLinePlan, taskMarkerChange, type LiveInlineSpec } from "../lib/livePreview";
+import { buildDisplayMathPlan, buildLiveInlinePlan, buildLiveLinePlan, taskMarkerChange, type LiveInlineSpec } from "../lib/livePreview";
 import { safeExternalLink } from "../lib/renderPolicy";
+import { blockControlsExtension } from "./blockControlsExtension";
 
 class TextWidget extends WidgetType {
   readonly text: string;
@@ -63,10 +66,64 @@ class ImageWidget extends WidgetType {
   ignoreEvent() { return false; }
 }
 
+class HorizontalRuleWidget extends WidgetType {
+  toDOM() {
+    const element = document.createElement("span");
+    element.className = "cm-live-horizontal-rule-widget";
+    element.setAttribute("role", "separator");
+    return element;
+  }
+}
+
+class MathWidget extends WidgetType {
+  readonly source: string;
+  readonly display: boolean;
+  readonly from: number;
+  readonly to: number;
+  readonly language: Language;
+  constructor(source: string, display: boolean, from: number, to: number, language: Language) {
+    super();
+    this.source = source;
+    this.display = display;
+    this.from = from;
+    this.to = to;
+    this.language = language;
+  }
+  eq(other: MathWidget) {
+    return other.source === this.source && other.display === this.display && other.from === this.from && other.to === this.to && other.language === this.language;
+  }
+  toDOM() {
+    const element = document.createElement(this.display ? "div" : "span");
+    element.className = this.display ? "cm-live-math cm-live-math-display" : "cm-live-math cm-live-math-inline";
+    element.dataset.mathFrom = String(this.from);
+    element.dataset.mathTo = String(this.to);
+    element.setAttribute("aria-label", this.language === "zh" ? `数学公式：${this.source}` : `Math formula: ${this.source}`);
+    try {
+      katex.render(this.source, element, {
+        displayMode: this.display,
+        throwOnError: true,
+        trust: false,
+        strict: "warn",
+        maxSize: 20,
+        maxExpand: 1000,
+        output: "htmlAndMathml",
+      });
+    } catch {
+      element.classList.add("invalid");
+      element.textContent = this.source || (this.language === "zh" ? "无效公式" : "Invalid formula");
+      element.title = this.language === "zh" ? "公式暂时无法渲染，点击编辑源码" : "Formula could not be rendered; click to edit the source";
+    }
+    return element;
+  }
+  ignoreEvent() { return false; }
+}
+
 function decorationFor(spec: LiveInlineSpec, language: Language): Range<Decoration> {
   if (spec.kind === "hide") return Decoration.replace({}).range(spec.from, spec.to);
   if (spec.kind === "task") return Decoration.replace({ widget: new TaskWidget(Boolean(spec.checked), spec.from, language) }).range(spec.from, spec.to);
   if (spec.kind === "image") return Decoration.replace({ widget: new ImageWidget(spec.text ?? "", language) }).range(spec.from, spec.to);
+  if (spec.kind === "math-inline") return Decoration.replace({ widget: new MathWidget(spec.text ?? "", false, spec.from, spec.to, language) }).range(spec.from, spec.to);
+  if (spec.kind === "horizontal-rule" && !spec.active) return Decoration.replace({ widget: new HorizontalRuleWidget() }).range(spec.from, spec.to);
   if (spec.kind === "list-marker" && spec.text === "•") {
     return Decoration.replace({ widget: new TextWidget("•", "cm-live-bullet", language === "zh" ? "项目符号" : "Bullet") }).range(spec.from, spec.to);
   }
@@ -91,13 +148,20 @@ function inlineDecorations(view: EditorView, language: Language): { decorations:
   const plan = buildLiveInlinePlan(view.state, view.visibleRanges, view.hasFocus);
   return {
     decorations: Decoration.set(plan.map((spec) => decorationFor(spec, language)), true),
-    atomic: Decoration.set(plan.filter((spec) => spec.kind === "hide" || spec.kind === "task" || spec.kind === "image" || (spec.kind === "list-marker" && spec.text === "•"))
+    atomic: Decoration.set(plan.filter((spec) => spec.kind === "hide" || spec.kind === "task" || spec.kind === "image" || spec.kind === "math-inline" || (spec.kind === "horizontal-rule" && !spec.active) || (spec.kind === "list-marker" && spec.text === "•"))
       .map((spec) => decorationFor(spec, language)), true),
   };
 }
 
-function lineDecorations(state: EditorState): DecorationSet {
-  return Decoration.set(buildLiveLinePlan(state).map((spec) => Decoration.line({ class: spec.classes }).range(spec.from)), true);
+function structuralDecorations(state: EditorState, language: Language): DecorationSet {
+  const decorations: Range<Decoration>[] = buildLiveLinePlan(state)
+    .map((spec) => Decoration.line({ class: spec.classes }).range(spec.from));
+  for (const math of buildDisplayMathPlan(state)) {
+    const widget = new MathWidget(math.source, true, math.from, math.to, language);
+    if (math.active) decorations.push(Decoration.widget({ widget, block: true, side: 1 }).range(math.to));
+    else decorations.push(Decoration.replace({ widget, block: true }).range(math.from, math.to));
+  }
+  return Decoration.set(decorations, true);
 }
 
 function linkAt(state: EditorState, position: number): string | undefined {
@@ -107,10 +171,39 @@ function linkAt(state: EditorState, position: number): string | undefined {
   return url ? state.doc.sliceString(url.from, url.to) : undefined;
 }
 
+function smartEnter(view: EditorView): boolean {
+  if (view.composing || !view.state.selection.main.empty) return false;
+  let node = syntaxTree(view.state).resolveInner(view.state.selection.main.head, -1);
+  let editableBlock = false;
+  while (node) {
+    if (node.name === "FencedCode" || node.name === "CodeBlock" || node.name === "InlineCode" || node.name === "DisplayMath" || node.name === "ListItem" || node.name === "Blockquote") return false;
+    if (node.name === "Paragraph" || /^ATXHeading[1-6]$/.test(node.name) || /^SetextHeading[12]$/.test(node.name)) editableBlock = true;
+    node = node.parent!;
+  }
+  if (!editableBlock) return false;
+  view.dispatch(view.state.replaceSelection("\n\n"), { scrollIntoView: true, userEvent: "input.block.split" });
+  return true;
+}
+
+function hardBreak(view: EditorView): boolean {
+  if (view.composing) return false;
+  let node = syntaxTree(view.state).resolveInner(view.state.selection.main.head, -1);
+  while (node) {
+    if (node.name === "FencedCode" || node.name === "CodeBlock" || node.name === "InlineCode" || node.name === "DisplayMath") return false;
+    node = node.parent!;
+  }
+  view.dispatch(view.state.replaceSelection("\\\n"), { scrollIntoView: true, userEvent: "input.block.break" });
+  return true;
+}
+
 export function livePreviewExtension(language: Language): Extension {
   const lines = StateField.define<DecorationSet>({
-    create: lineDecorations,
-    update(value, transaction) { return transaction.docChanged ? lineDecorations(transaction.state) : value; },
+    create: (state) => structuralDecorations(state, language),
+    update(value, transaction) {
+      return transaction.docChanged || transaction.selection
+        ? structuralDecorations(transaction.state, language)
+        : value;
+    },
     provide: (field) => EditorView.decorations.from(field),
   });
   const inline = ViewPlugin.fromClass(class {
@@ -135,6 +228,15 @@ export function livePreviewExtension(language: Language): Extension {
           const from = Number(task.dataset.taskFrom);
           const change = Number.isFinite(from) ? taskMarkerChange(view.state, from) : null;
           if (change) view.dispatch({ changes: change, selection: { anchor: change.from + change.insert.length } });
+          view.focus();
+          return true;
+        }
+        const math = target?.closest<HTMLElement>("[data-math-from]");
+        if (math) {
+          event.preventDefault();
+          const from = Number(math.dataset.mathFrom);
+          const to = Number(math.dataset.mathTo);
+          if (Number.isFinite(from) && Number.isFinite(to)) view.dispatch({ selection: { anchor: Math.min(to, from + (math.classList.contains("cm-live-math-display") ? 3 : 1)) }, scrollIntoView: true });
           view.focus();
           return true;
         }
@@ -170,7 +272,14 @@ export function livePreviewExtension(language: Language): Extension {
     lines,
     inline,
     EditorView.atomicRanges.of((view) => view.plugin(inline)?.atomic ?? Decoration.none),
-    keymap.of([{
+    blockControlsExtension(language),
+    Prec.highest(keymap.of([{
+      key: "Enter",
+      run: smartEnter,
+    }, {
+      key: "Shift-Enter",
+      run: hardBreak,
+    }, {
       key: "Mod-Enter",
       run(view) {
         const change = taskMarkerChange(view.state, view.state.selection.main.head);
@@ -178,6 +287,6 @@ export function livePreviewExtension(language: Language): Extension {
         view.dispatch({ changes: change });
         return true;
       },
-    }]),
+    }])),
   ];
 }

@@ -2,12 +2,13 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   ArchiveRestore, BookOpenText, Check, ChevronDown, ChevronRight, Clock3, Columns2, Download,
   FileDown, FileUp, FolderOpen, FolderPlus, HardDrive, Languages, Menu, Moon,
-  MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, RotateCcw,
+  ListTree, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, RotateCcw,
   Search, Settings, Sun, Tag, Trash2, Upload, Wifi, WifiOff,
 } from "lucide-react";
 import { LibraryOverview } from "./components/LibraryOverview";
 import { Modal } from "./components/Modal";
 import { MoveDialog } from "./components/MoveDialog";
+import { OutlinePanel } from "./components/OutlinePanel";
 import { QuickOpenDialog } from "./components/QuickOpenDialog";
 import { WorkspaceTree, type TreeMoveRequest } from "./components/WorkspaceTree";
 import { createBackup, downloadBlob, inspectBackup } from "./lib/backup";
@@ -31,6 +32,8 @@ import {
   type BackupPreview, type EditorAppearance, type FolderRecord, type Language, type NoteDraft, type NoteRecord,
   type RevisionRecord, type Theme, type ViewMode, type WorkspaceItemKind,
 } from "./types";
+import type { MarkdownEditorHandle } from "./components/MarkdownEditor";
+import type { OutlineEntry } from "./lib/documentStructure";
 
 type SaveState = "saved" | "saving" | "failed";
 type NodeTarget = { kind: WorkspaceItemKind; id: string };
@@ -74,6 +77,8 @@ export default function App() {
   const [updateApp, setUpdateApp] = useState<null | (() => void)>(null);
   const [sidebarWidth, setSidebarWidth] = useState(304);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [outline, setOutline] = useState<OutlineEntry[]>([]);
 
   const draftRef = useRef<NoteDraft | null>(null);
   const draftVersionRef = useRef(0);
@@ -85,6 +90,8 @@ export default function App() {
   const backupInputRef = useRef<HTMLInputElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const writingAreaRef = useRef<HTMLDivElement>(null);
+  const previewPaneRef = useRef<HTMLElement>(null);
+  const editorRef = useRef<MarkdownEditorHandle>(null);
   const lastEditingModeRef = useRef<EditorAppearance>("live");
   const t = useCallback((key: MessageKey, values?: Record<string, string | number>) => message(language, key, values), [language]);
 
@@ -98,13 +105,14 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [storedLanguage, storedTheme, storedView, legacyView, storedEditingMode, storedBackup, storedExpanded, storedWidth, storedCollapsed] = await Promise.all([
+      const [storedLanguage, storedTheme, storedView, legacyView, storedEditingMode, storedBackup, storedExpanded, storedWidth, storedCollapsed, storedOutline] = await Promise.all([
         getSetting<Language>("language", preferredLanguage()), getSetting<Theme>("theme", "light"),
         getSetting<unknown>("editorViewMode", null), getSetting<unknown>("viewMode", null),
         getSetting<EditorAppearance>("lastEditingMode", "live"),
         getSetting<number | null>("lastBackup", null),
         getSetting<string[]>("expandedFolderIds", []), getSetting<number>("sidebarWidth", 304),
         getSetting<boolean>("sidebarCollapsed", false),
+        getSetting<boolean>("outlineOpen", false),
       ]);
       const normalizedView = normalizeViewMode(storedView, legacyView);
       lastEditingModeRef.current = normalizedView === "source" || normalizedView === "live"
@@ -116,7 +124,7 @@ export default function App() {
       const records = await listWorkspace();
       if (cancelled) return;
       setLanguage(storedLanguage); setTheme(storedTheme); setViewMode(normalizedView); setLastBackup(storedBackup);
-      setExpandedIds(new Set(storedExpanded)); setSidebarWidth(Math.max(240, Math.min(420, storedWidth))); setSidebarCollapsed(storedCollapsed);
+      setExpandedIds(new Set(storedExpanded)); setSidebarWidth(Math.max(240, Math.min(420, storedWidth))); setSidebarCollapsed(storedCollapsed); setOutlineOpen(storedOutline);
       setNotes(records.notes); setFolders(records.folders);
       const first = records.notes.filter((note) => note.trashedAt === null)
         .sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.updatedAt - left.updatedAt)[0];
@@ -453,6 +461,7 @@ export default function App() {
               <label className="tag-input"><Tag size={13} /><input value={draft.tags.join(", ")} onChange={(event) => updateDraft({ tags: event.target.value.split(/[,，]/) })} placeholder={t("addTags")} /></label>
             </div>
             <div className="note-tools"><div className="view-switcher">{(["live", "source", "reading"] as const).map((mode) => <button type="button" key={mode} aria-pressed={viewMode === mode} title={mode === "reading" ? (language === "zh" ? "切换阅读视图（⌘/Ctrl E）" : "Toggle reading view (⌘/Ctrl E)") : undefined} className={viewMode === mode ? "active" : ""} onClick={() => void changeView(mode)}>{t(mode)}</button>)}</div>
+              <button type="button" className={`icon-button ${outlineOpen ? "active" : ""}`} aria-pressed={outlineOpen} aria-label={language === "zh" ? "切换本文大纲" : "Toggle outline"} title={language === "zh" ? "本文大纲" : "Outline"} onClick={() => setOutlineOpen((current) => { const next = !current; void setSetting("outlineOpen", next); return next; })}><ListTree size={17} /></button>
               <details className="menu-details note-menu"><summary className="icon-button" aria-label={t("more")}><Menu size={18} /><ChevronDown size={12} /></summary><div className="dropdown-menu align-right" onClickCapture={(event) => { const details = event.currentTarget.closest("details"); if (details) details.open = false; }}>
                 <button type="button" onClick={() => void setPinned(activeNote.id, !activeNote.pinned).then(reloadWorkspace)}>{activeNote.pinned ? <PinOff size={16} /> : <Pin size={16} />}{t(activeNote.pinned ? "unpin" : "pin")}</button>
                 <button type="button" onClick={async () => { await flushDraft(); const fresh = (await listWorkspace()).notes.find((note) => note.id === activeNote.id); if (fresh) { await duplicateNote(fresh, language === "zh" ? "副本" : "copy"); await reloadWorkspace(); } }}><FileDown size={16} />{t("duplicate")}</button>
@@ -464,9 +473,16 @@ export default function App() {
               </div></details>
             </div>
           </header>
+          <div className={`writing-shell ${outlineOpen && viewMode !== "split" ? "has-outline" : ""}`}>
           <div ref={writingAreaRef} className={`writing-area mode-${viewMode}`}>
-            <section className="editor-pane" aria-label={t(viewMode === "source" || viewMode === "split" ? "source" : "live")} aria-hidden={viewMode === "reading"}><Suspense fallback={<div className="pane-loading">Markdown…</div>}><MarkdownEditor key={draft.id} value={draft.content} onChange={(content) => updateDraft({ content })} theme={theme} appearance={viewMode === "source" || viewMode === "split" ? "source" : "live"} language={language} visible={viewMode !== "reading"} label={language === "zh" ? (viewMode === "source" || viewMode === "split" ? "Markdown 源码编辑器" : "Markdown 实时预览编辑器") : (viewMode === "source" || viewMode === "split" ? "Markdown source editor" : "Markdown live preview editor")} /></Suspense></section>
-            {(viewMode === "reading" || viewMode === "split") && <section className="preview-pane" tabIndex={-1} aria-label={t("reading")}><Suspense fallback={<div className="pane-loading">Preview…</div>}><MarkdownPreview content={draft.content} language={language} /></Suspense></section>}
+            <section className="editor-pane" aria-label={t(viewMode === "source" || viewMode === "split" ? "source" : "live")} aria-hidden={viewMode === "reading"}><Suspense fallback={<div className="pane-loading">Markdown…</div>}><MarkdownEditor ref={editorRef} key={draft.id} value={draft.content} onChange={(content) => updateDraft({ content })} onOutlineChange={setOutline} theme={theme} appearance={viewMode === "source" || viewMode === "split" ? "source" : "live"} language={language} visible={viewMode !== "reading"} label={language === "zh" ? (viewMode === "source" || viewMode === "split" ? "Markdown 源码编辑器" : "Markdown 实时预览编辑器") : (viewMode === "source" || viewMode === "split" ? "Markdown source editor" : "Markdown live preview editor")} /></Suspense></section>
+            {(viewMode === "reading" || viewMode === "split") && <section ref={previewPaneRef} className="preview-pane" tabIndex={-1} aria-label={t("reading")}><Suspense fallback={<div className="pane-loading">Preview…</div>}><MarkdownPreview content={draft.content} language={language} /></Suspense></section>}
+          </div>
+          {outlineOpen && viewMode !== "split" && <OutlinePanel entries={outline} language={language} onClose={() => { setOutlineOpen(false); void setSetting("outlineOpen", false); }} onReveal={(entry) => {
+            if (viewMode === "reading") {
+              previewPaneRef.current?.querySelector<HTMLElement>(`[data-source-from="${entry.from}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+            } else editorRef.current?.revealPosition(entry.from);
+          }} />}
           </div>
           <footer className="note-status"><span>Markdown · GFM · {t(viewMode)}</span><span>{countCharacters(draft.content)} {t("words")}</span><span>v{activeNote.revision}</span></footer>
         </section> : <LibraryOverview title={navigationTitle()} navigation={navigation} notes={overviewNotes} allNotes={notes} folders={folders} language={language} onOpenNote={(id) => void openNote(id)} onOpenFolder={(id) => void navigate({ kind: "folder", folderId: id })} onNewNote={() => void handleNewNote()} onRestoreNote={(id) => void restoreTrashedNote(id)} onRestoreFolder={(id) => void restoreTrashedFolder(id)} onDeleteNote={(id) => void deleteNote(id)} onDeleteFolder={(id) => void deleteFolder(id)} />}

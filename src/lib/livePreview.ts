@@ -11,6 +11,7 @@ export type LiveInlineKind =
   | "list-marker"
   | "task"
   | "image"
+  | "math-inline"
   | "html"
   | "horizontal-rule";
 
@@ -20,11 +21,19 @@ export interface LiveInlineSpec {
   kind: LiveInlineKind;
   text?: string;
   checked?: boolean;
+  active?: boolean;
 }
 
 export interface LiveLineSpec {
   from: number;
   classes: string;
+}
+
+export interface LiveMathSpec {
+  from: number;
+  to: number;
+  source: string;
+  active: boolean;
 }
 
 export interface VisibleRange { from: number; to: number }
@@ -67,6 +76,17 @@ export function buildLiveInlinePlan(state: EditorState, visibleRanges: readonly 
         const parentActive = parent ? selectionTouches(state, parent.from, parent.to, revealSelection) : selectionTouchesLine(state, node.from, revealSelection);
         const text = source.sliceString(node.from, node.to);
 
+        if (node.name === "InlineMath") {
+          if (!selectionTouches(state, node.from, node.to, revealSelection)) {
+            const mathText = node.node.getChild("MathText");
+            addUnique(specs, seen, {
+              from: node.from, to: node.to, kind: "math-inline",
+              text: mathText ? source.sliceString(mathText.from, mathText.to) : text.slice(1, -1),
+            });
+            return false;
+          }
+          return;
+        }
         if (node.name === "Image") {
           if (!selectionTouches(state, node.from, node.to, revealSelection)) {
             const altMatch = /^!\[([^\]]*)\]/.exec(text);
@@ -81,7 +101,12 @@ export function buildLiveInlinePlan(state: EditorState, visibleRanges: readonly 
         else if (node.name === "InlineCode") addUnique(specs, seen, { from: node.from, to: node.to, kind: "inline-code" });
         else if (node.name === "Link") addUnique(specs, seen, { from: node.from, to: node.to, kind: "link" });
         else if (node.name === "HTMLTag") addUnique(specs, seen, { from: node.from, to: node.to, kind: "html" });
-        else if (node.name === "HorizontalRule") addUnique(specs, seen, { from: node.from, to: node.to, kind: "horizontal-rule" });
+        else if (node.name === "HorizontalRule") addUnique(specs, seen, {
+          from: node.from,
+          to: node.to,
+          kind: "horizontal-rule",
+          active: selectionTouchesLine(state, node.from, revealSelection),
+        });
         else if (node.name === "TaskMarker") {
           addUnique(specs, seen, { from: node.from, to: node.to, kind: "task", checked: /^\[[xX]\]$/.test(text) });
           return false;
@@ -127,10 +152,30 @@ export function buildLiveLinePlan(state: EditorState): LiveLineSpec[] {
       else if (node.name === "ListItem") addRange(node.from, node.to, "cm-live-list-line");
       else if (node.name === "FencedCode") addRange(node.from, node.to, "cm-live-code-block");
       else if (node.name === "Table") addRange(node.from, node.to, "cm-live-table-line");
+      else if (node.name === "DisplayMath") addRange(node.from, node.to, "cm-live-math-source");
     },
   });
   return [...classes.entries()].sort(([left], [right]) => left - right)
     .map(([from, names]) => ({ from, classes: [...names].join(" ") }));
+}
+
+export function buildDisplayMathPlan(state: EditorState): LiveMathSpec[] {
+  const specs: LiveMathSpec[] = [];
+  syntaxTree(state).iterate({
+    enter(node) {
+      if (node.name !== "DisplayMath") return;
+      const mathText = node.node.getChild("MathText");
+      if (!mathText) return false;
+      specs.push({
+        from: node.from,
+        to: node.to,
+        source: state.doc.sliceString(mathText.from, mathText.to).trim(),
+        active: selectionTouches(state, node.from, node.to, true),
+      });
+      return false;
+    },
+  });
+  return specs;
 }
 
 export function taskMarkerChange(state: EditorState, position: number): TextChange | null {
