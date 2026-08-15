@@ -592,17 +592,18 @@ export default function App() {
       </header>
       {updateApp && <div className="update-banner"><span>{t("updateReady")}</span><button type="button" onClick={updateApp}>{t("updateNow")}</button></div>}
       <main className={`workspace ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}>
-        <button type="button" className="sidebar-toggle" aria-label={t(sidebarCollapsed ? "showSidebar" : "hideSidebar")} title={t(sidebarCollapsed ? "showSidebar" : "hideSidebar")} onClick={() => { setSidebarCollapsed(!sidebarCollapsed); void setSetting("sidebarCollapsed", !sidebarCollapsed); }}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button>
+        {sidebarCollapsed && <button type="button" className="sidebar-reopen-button" aria-label={t("showSidebar")} title={t("showSidebar")} onClick={() => { setSidebarCollapsed(false); void setSetting("sidebarCollapsed", false); }}><PanelLeftOpen size={18} /></button>}
         {!sidebarCollapsed && <>
           <aside className="library-sidebar">
             <div className="sidebar-actions">
               <button type="button" className="primary-action" onClick={() => void handleNewNote()}><Plus size={17} />{t("newNote")}</button>
-              <DismissibleMenu label={t("more")} className="icon-button" trigger={<MoreHorizontal size={18} />}>
+              <DismissibleMenu label={t("more")} className="sidebar-action-icon" trigger={<MoreHorizontal size={18} />}>
                 <button type="button" onClick={() => void handleNewFolder()}><FolderPlus size={16} />{t("newFolder")}</button>
                 <button type="button" onClick={() => markdownInputRef.current?.click()}><FileUp size={16} />{t("importMarkdown")}</button>
                 <button type="button" onClick={() => void handleBackup()}><Download size={16} />{t("backup")}</button>
                 <button type="button" onClick={() => backupInputRef.current?.click()}><Upload size={16} />{t("restoreBackup")}</button>
               </DismissibleMenu>
+              <button type="button" className="sidebar-action-icon" aria-label={t("hideSidebar")} title={t("hideSidebar")} onClick={() => { setSidebarCollapsed(true); void setSetting("sidebarCollapsed", true); }}><PanelLeftClose size={18} /></button>
             </div>
             <button type="button" className="quick-open-button" onClick={() => setQuickOpen(true)}><Search size={16} /><span>{language === "zh" ? "快速打开" : "Quick open"}</span><kbd>⌘K</kbd></button>
             <nav className="library-nav" aria-label={language === "zh" ? "资料库" : "Library"}>
@@ -612,7 +613,7 @@ export default function App() {
                 ["all", t("allNotes"), notes.filter((note) => note.trashedAt === null && !hiddenFolders.has(note.parentId)).length],
               ] as const).map(([kind, label, count]) => <button type="button" key={kind} className={navigation.kind === kind ? "active" : ""} onClick={() => void navigate({ kind })}><FolderOpen size={15} />{label}{count !== null && <span>{count}</span>}</button>)}
             </nav>
-            <div className="tree-section-head"><span>{t("folders")}</span><DismissibleMenu label={t("addToGrove")} className="tree-add-button" menuClassName="tree-add-dropdown" align="right" trigger={<Plus size={17} />}><button type="button" onClick={() => void handleNewNote(ROOT_FOLDER_ID)}><Plus size={16} />{t("newNote")}</button><button type="button" onClick={() => void handleNewFolder(ROOT_FOLDER_ID)}><FolderPlus size={16} />{t("newFolder")}</button></DismissibleMenu></div>
+            <div className="tree-section-head"><span>{t("folders")}</span><DismissibleMenu label={t("addToGrove")} className="tree-add-button" menuClassName="tree-add-dropdown" align="right" trigger={<><Plus size={14} /><span>{t("newItem")}</span></>}><button type="button" onClick={() => void handleNewNote(ROOT_FOLDER_ID)}><Plus size={16} />{t("newNote")}</button><button type="button" onClick={() => void handleNewFolder(ROOT_FOLDER_ID)}><FolderPlus size={16} />{t("newFolder")}</button></DismissibleMenu></div>
             <WorkspaceTree
               folders={folders} notes={notes} expandedIds={expandedIds} selectedNoteId={selectedNoteId}
               selectedFolderId={!selectedNoteId && navigation.kind === "folder" ? navigation.folderId : null} language={language}

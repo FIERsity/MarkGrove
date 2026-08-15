@@ -106,12 +106,15 @@ html[lang="en"] .topbar-feedback { letter-spacing: -.01em; }
 .workspace { position: relative; min-height: 0; display: grid; flex: 1; grid-template-columns: var(--sidebar-width, 304px) 1px minmax(0, 1fr); }
 .workspace.sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
 .library-sidebar { min-height: 0; display: flex; flex-direction: column; padding: 14px 12px 10px; border-right: 1px solid var(--line); background: color-mix(in srgb, var(--paper) 82%, var(--green-pale)); }
-.sidebar-toggle { position: absolute; z-index: 16; top: 12px; left: calc(var(--sidebar-width) - 14px); display: grid; width: 28px; height: 32px; place-items: center; padding: 0; color: var(--muted); border: 1px solid var(--line); border-radius: 8px; background: var(--paper-raised); box-shadow: 0 2px 8px rgba(24, 35, 29, .08); cursor: pointer; }
-.sidebar-toggle:hover { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, var(--line)); background: var(--green-pale); }
-.workspace.sidebar-collapsed .sidebar-toggle { left: 12px; }
 .sidebar-actions { display: flex; gap: 8px; }
 .primary-action { display: flex; flex: 1; height: 38px; align-items: center; justify-content: center; gap: 7px; color: #fffdf7; border: 0; border-radius: 9px; background: #315b45; cursor: pointer; }
 .primary-action:hover { background: #244b37; }
+.sidebar-action-icon { display: grid; flex: none; width: 38px; height: 38px; place-items: center; padding: 0; color: var(--muted); border: 1px solid var(--line); border-radius: 9px; background: var(--paper-raised); cursor: pointer; }
+.sidebar-action-icon:hover, .sidebar-action-icon[aria-expanded="true"] { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, var(--line)); background: var(--green-pale); }
+.sidebar-reopen-button { position: absolute; z-index: 16; top: 14px; left: 12px; display: grid; width: 32px; height: 32px; place-items: center; padding: 0; color: var(--muted); border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
+.sidebar-reopen-button:hover { color: var(--green); background: var(--green-pale); }
+.workspace.sidebar-collapsed .note-toolbar { padding-left: 58px; }
+.workspace.sidebar-collapsed .library-overview { padding-left: clamp(64px, 5vw, 76px); }
 .dropdown-menu { position: absolute; z-index: 12; top: calc(100% + 6px); left: 0; display: grid; min-width: 218px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper-raised); box-shadow: var(--shadow); }
 .dismissible-menu { position: fixed; z-index: 70; top: 0; left: 0; max-height: min(420px, calc(100vh - 16px)); overflow: auto; }
 .tree-add-dropdown { min-width: 178px; }
@@ -316,8 +319,7 @@ body.is-block-dragging { cursor: grabbing; user-select: none; }
 .quick-open-button span { flex: 1; text-align: left; }
 .quick-open-button kbd { padding: 2px 5px; color: color-mix(in srgb, var(--muted) 80%, transparent); border: 1px solid var(--line); border-radius: 4px; background: var(--paper); font: 10px ui-monospace, monospace; }
 .tree-section-head { display: flex; align-items: center; justify-content: space-between; margin: 12px 5px 4px; color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
-.tree-add-button { display: grid; width: 30px; height: 30px; place-items: center; color: var(--muted); border-radius: 7px; cursor: pointer; list-style: none; }
-.tree-add-button::-webkit-details-marker { display: none; }
+.tree-add-button { display: inline-flex; width: auto; height: 26px; align-items: center; gap: 4px; padding: 0 6px; color: var(--muted); border: 0; border-radius: 6px; background: transparent; cursor: pointer; font: 650 11px/1 inherit; letter-spacing: 0; text-transform: none; }
 .tree-add-button:hover, .tree-add-button[aria-expanded="true"] { color: var(--green); background: var(--green-pale); }
 .workspace-tree { min-height: 80px; flex: 1; overflow: auto; padding: 2px 0 8px; }
 .workspace-tree > div { min-width: 0; }
@@ -444,8 +446,6 @@ body.is-block-dragging { cursor: grabbing; user-select: none; }
   .workspace { grid-template-columns: 1fr; }
   .library-sidebar { position: fixed; z-index: 25; inset: 58px auto 0 0; width: min(86vw, var(--sidebar-width)); box-shadow: var(--shadow); }
   .sidebar-resizer { display: none; }
-  .sidebar-toggle { left: min(calc(86vw - 14px), calc(var(--sidebar-width) - 14px)); }
-  .workspace.sidebar-collapsed .sidebar-toggle { left: 12px; }
   .brand-block small, .save-state { display: none; }
   .note-toolbar { padding-left: 14px; }
   .view-switcher { display: none; }
