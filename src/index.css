@@ -313,8 +313,11 @@ body.is-block-dragging { cursor: grabbing; user-select: none; }
 .quick-open-button span { flex: 1; text-align: left; }
 .quick-open-button kbd { padding: 2px 5px; color: color-mix(in srgb, var(--muted) 80%, transparent); border: 1px solid var(--line); border-radius: 4px; background: var(--paper); font: 10px ui-monospace, monospace; }
 .tree-section-head { display: flex; align-items: center; justify-content: space-between; margin: 12px 5px 4px; color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
-.tree-section-head button { display: grid; width: 28px; height: 28px; place-items: center; color: var(--muted); border: 0; border-radius: 6px; background: transparent; cursor: pointer; }
-.tree-section-head button:hover { color: var(--green); background: var(--green-pale); }
+.tree-add-menu { position: relative; }
+.tree-add-button { display: grid; width: 30px; height: 30px; place-items: center; color: var(--muted); border-radius: 7px; cursor: pointer; list-style: none; }
+.tree-add-button::-webkit-details-marker { display: none; }
+.tree-add-button:hover, .tree-add-menu[open] .tree-add-button { color: var(--green); background: var(--green-pale); }
+.tree-add-menu .dropdown-menu { top: calc(100% + 5px); min-width: 178px; }
 .workspace-tree { min-height: 80px; flex: 1; overflow: auto; padding: 2px 0 8px; }
 .workspace-tree > div { min-width: 0; }
 .tree-row { --indent: calc(var(--tree-depth) * 14px); position: relative; display: grid; min-width: 0; height: 36px; grid-template-columns: 24px 24px minmax(0, 1fr) 30px 28px; align-items: center; padding-left: var(--indent); color: var(--muted); border-radius: 7px; outline: none; }
@@ -414,6 +417,7 @@ body.is-block-dragging { cursor: grabbing; user-select: none; }
 .placement-field { display: grid; gap: 6px; margin-top: 13px; }
 .placement-field span { color: var(--muted); font-size: 11px; }
 .placement-field select { height: 40px; padding: 0 10px; color: var(--ink); border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.field-error { margin: 8px 0 0; color: var(--danger); font-size: 12px; line-height: 1.45; }
 .undo-toast { position: fixed; z-index: 50; bottom: 24px; left: 50%; display: flex; min-height: 44px; align-items: center; gap: 12px; padding: 7px 8px 7px 14px; color: var(--ink); border: 1px solid var(--line); border-radius: 10px; background: var(--paper-raised); box-shadow: var(--shadow); transform: translateX(-50%); font-size: 12px; }
 .undo-toast button { min-width: 32px; height: 32px; padding: 0 9px; color: var(--green); border: 0; border-radius: 6px; background: transparent; cursor: pointer; font-weight: 700; }
 .undo-toast button:hover { background: var(--green-pale); }

@@ -93,6 +93,7 @@ export default function App() {
   const [moveTarget, setMoveTarget] = useState<NodeTarget | null>(null);
   const [renameTarget, setRenameTarget] = useState<NodeTarget | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [updateApp, setUpdateApp] = useState<null | (() => void)>(null);
   const [sidebarWidth, setSidebarWidth] = useState(304);
@@ -108,6 +109,7 @@ export default function App() {
   const undoHistoryRef = useRef<Array<() => Promise<void>>>([]);
   const markdownInputRef = useRef<HTMLInputElement>(null);
   const backupInputRef = useRef<HTMLInputElement>(null);
+  const pendingFolderIdRef = useRef<string | null>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const writingAreaRef = useRef<HTMLDivElement>(null);
   const previewPaneRef = useRef<HTMLElement>(null);
@@ -292,9 +294,12 @@ export default function App() {
     await openNote(note.id, true);
   }
   async function handleNewFolder(parentId = currentParentId()) {
-    const folder = await createFolder(t("untitledFolder"), parentId); await reloadWorkspace();
+    const usedNames = new Set(folders.filter((folder) => folder.parentId === parentId && folder.trashedAt === null).map((folder) => folder.name.trim().toLocaleLowerCase()));
+    const baseName = t("untitledFolder"); let nextName = baseName; let suffix = 2;
+    while (usedNames.has(nextName.toLocaleLowerCase())) nextName = `${baseName} ${suffix++}`;
+    const folder = await createFolder(nextName, parentId); await reloadWorkspace();
     const next = new Set(expandedIds); next.add(parentId); setExpandedIds(next); void setSetting("expandedFolderIds", [...next]);
-    setRenameTarget({ kind: "folder", id: folder.id }); setRenameValue(folder.name); showToast(t("folderCreated"));
+    pendingFolderIdRef.current = folder.id; setRenameTarget({ kind: "folder", id: folder.id }); setRenameValue(folder.name); setRenameError(null);
   }
 
   async function handleMove(request: TreeMoveRequest) {
@@ -334,17 +339,27 @@ export default function App() {
 
   function requestRename(kind: WorkspaceItemKind, id: string) {
     const name = kind === "note" ? notes.find((note) => note.id === id)?.title : folders.find((folder) => folder.id === id)?.name;
-    setRenameTarget({ kind, id }); setRenameValue(name ?? "");
+    pendingFolderIdRef.current = null; setRenameTarget({ kind, id }); setRenameValue(name ?? ""); setRenameError(null);
+  }
+  async function cancelRename() {
+    const pendingFolderId = pendingFolderIdRef.current;
+    pendingFolderIdRef.current = null; setRenameTarget(null); setRenameError(null);
+    if (pendingFolderId) { await deleteFolderForever(pendingFolderId); await reloadWorkspace(); }
   }
   async function confirmRename() {
     if (!renameTarget) return;
-    if (renameTarget.kind === "folder") await renameFolder(renameTarget.id, renameValue);
+    if (renameTarget.kind === "folder") {
+      const folder = folders.find((item) => item.id === renameTarget.id);
+      const duplicate = folder && folders.some((item) => item.id !== folder.id && item.parentId === folder.parentId && item.trashedAt === null && item.name.trim().toLocaleLowerCase() === renameValue.trim().toLocaleLowerCase());
+      if (duplicate) { setRenameError(t("folderNameTaken", { name: renameValue.trim() || t("untitledFolder") })); return; }
+      await renameFolder(renameTarget.id, renameValue);
+    }
     else {
       const note = notes.find((item) => item.id === renameTarget.id);
       if (note) await queueDraftSave({ ...asDraft(note), title: renameValue });
       if (draftRef.current?.id === renameTarget.id) { const next = { ...draftRef.current, title: renameValue }; draftRef.current = next; setDraft(next); }
     }
-    setRenameTarget(null); await reloadWorkspace();
+    pendingFolderIdRef.current = null; setRenameError(null); setRenameTarget(null); await reloadWorkspace();
   }
 
   async function restoreTrashedNote(id: string) { await restoreNote(id); await reloadWorkspace(); showToast(language === "zh" ? "笔记已恢复" : "Note restored"); }
@@ -516,7 +531,7 @@ export default function App() {
                 ["all", t("allNotes"), notes.filter((note) => note.trashedAt === null && !hiddenFolders.has(note.parentId)).length],
               ] as const).map(([kind, label, count]) => <button type="button" key={kind} className={navigation.kind === kind ? "active" : ""} onClick={() => void navigate({ kind })}><FolderOpen size={15} />{label}{count !== null && <span>{count}</span>}</button>)}
             </nav>
-            <div className="tree-section-head"><span>{t("folders")}</span><button type="button" aria-label={t("newFolder")} onClick={() => void handleNewFolder(ROOT_FOLDER_ID)}><Plus size={15} /></button></div>
+            <div className="tree-section-head"><span>{t("folders")}</span><details className="menu-details tree-add-menu"><summary className="tree-add-button" aria-label={t("addToGrove")}><Plus size={17} /></summary><div className="dropdown-menu align-right" onClickCapture={(event) => { const details = event.currentTarget.closest("details"); if (details) details.open = false; }}><button type="button" onClick={() => void handleNewNote(ROOT_FOLDER_ID)}><Plus size={16} />{t("newNote")}</button><button type="button" onClick={() => void handleNewFolder(ROOT_FOLDER_ID)}><FolderPlus size={16} />{t("newFolder")}</button></div></details></div>
             <WorkspaceTree
               folders={folders} notes={notes} expandedIds={expandedIds} selectedNoteId={selectedNoteId}
               selectedFolderId={!selectedNoteId && navigation.kind === "folder" ? navigation.folderId : null} language={language}
@@ -577,7 +592,7 @@ export default function App() {
       {toast && <div className="undo-toast" role="status"><span>{toast.message}</span>{toast.undo && <button type="button" onClick={() => { if (toast.undo) runUndo(toast.undo); }}>{t("undo")}</button>}<button type="button" aria-label={t("close")} onClick={() => setToast(null)}>×</button></div>}
       {quickOpen && <QuickOpenDialog notes={notes} folders={folders} language={language} onClose={() => setQuickOpen(false)} onOpenNote={(id) => void openNote(id)} onOpenFolder={(id) => void navigate({ kind: "folder", folderId: id })} />}
       {moveTarget && moveItemRecord && <MoveDialog kind={moveTarget.kind} id={moveTarget.id} name={"title" in moveItemRecord ? moveItemRecord.title : moveItemRecord.name} notes={notes} folders={folders} language={language} onClose={() => setMoveTarget(null)} onMove={(parentId, targetIndex) => { const target = moveTarget; setMoveTarget(null); void handleMove({ ...target, parentId, targetIndex }); }} />}
-      {renameTarget && <Modal title={t("rename")} closeLabel={t("close")} onClose={() => setRenameTarget(null)} footer={<><button type="button" onClick={() => setRenameTarget(null)}>{t("cancel")}</button><button type="button" className="primary" onClick={() => void confirmRename()}>{t("save")}</button></>}><label className="rename-field"><span>{renameTarget.kind === "folder" ? t("folders") : t("newNote")}</span><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void confirmRename(); }} /></label></Modal>}
+      {renameTarget && <Modal title={t(renameTarget.kind === "folder" && pendingFolderIdRef.current ? "newFolder" : "rename")} closeLabel={t("close")} onClose={() => void cancelRename()} footer={<><button type="button" onClick={() => void cancelRename()}>{t("cancel")}</button><button type="button" className="primary" onClick={() => void confirmRename()}>{t("save")}</button></>}><label className="rename-field"><span>{renameTarget.kind === "folder" ? t("folders") : t("newNote")}</span><input autoFocus value={renameValue} onChange={(event) => { setRenameValue(event.target.value); setRenameError(null); }} onKeyDown={(event) => { if (event.key === "Enter") void confirmRename(); }} /></label>{renameError && <p className="field-error" role="alert">{renameError}</p>}</Modal>}
       {feedbackOpen && <FeedbackDialog language={language} onClose={() => setFeedbackOpen(false)} onSuccess={() => { setFeedbackOpen(false); showToast(t("feedbackSuccess")); }} />}
       {settingsOpen && <Modal title={t("settings")} closeLabel={t("close")} onClose={() => setSettingsOpen(false)}><div className="settings-grid">
         <section><h3><Languages size={17} />{t("language")}</h3><div className="segmented"><button type="button" className={language === "zh" ? "active" : ""} onClick={() => void changeLanguage("zh")}>中文</button><button type="button" className={language === "en" ? "active" : ""} onClick={() => void changeLanguage("en")}>English</button></div></section>
