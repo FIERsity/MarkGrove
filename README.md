@@ -19,7 +19,7 @@ MarkGrove 是一个无需账号、本地优先、可离线使用的 Markdown 网
 - 650ms 防抖自动保存；同一笔记的写入串行执行，持续写作时定期保留最近 20 个本地快照。
 - 导入 `.md`、`.markdown`、`.txt`；导出标准 Markdown 与 YAML frontmatter。
 - 整库版本化 ZIP 备份会保留文件夹、顺序和笔记归属；ID 冲突会作为完整副本导入，不静默覆盖。
-- 中英双语、浅色/深色主题、可安装 PWA 和离线应用外壳。
+- 中英双语、浅色/深色主题、可安装 PWA 和离线应用外壳。语言切换与反馈入口在右上角；反馈只发送你填写的文字。
 - 默认不执行原始 HTML、不自动加载 Markdown 图片，外链只在用户点击时打开。
 
 > IndexedDB、PWA 安装和浏览器的“持久存储”权限都不是备份。重要笔记应定期使用“备份全部笔记”导出 ZIP。
@@ -62,6 +62,6 @@ npm run check
 
 MarkGrove is a private, local-first Markdown notebook that lives in your browser. It needs no account, works offline, and keeps note text, titles, tags, search data, and revision snapshots in local IndexedDB.
 
-It includes a unified folder-and-note tree, pointer and keyboard reordering, quick open, an editable Live Preview backed by CodeMirror, local KaTeX math, Markdown-derived block controls, slash commands, a live outline, source and reading views, autosave, trash and restore, Markdown import/export, versioned ZIP backups, bilingual UI, themes, and an installable PWA shell.
+It includes a unified folder-and-note tree, pointer and keyboard reordering, quick open, an editable Live Preview backed by CodeMirror, local KaTeX math, Markdown-derived block controls, slash commands, a live outline, source and reading views, autosave, trash and restore, Markdown import/export, versioned ZIP backups, bilingual UI, themes, and an installable PWA shell. Language switching and feedback sit in the top-right corner; feedback sends only the text you type.
 
 Browser storage is not a backup. Export a ZIP regularly if the notes matter.

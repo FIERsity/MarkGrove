@@ -43,6 +43,7 @@ MarkGrove 是独立版本控制、部署到 GitHub Pages 的本地优先 Markdow
 - 最低验证：`npm run check`，等价于 test + lint + build；文件与 PWA 改动另做桌面浏览器检查。
 - 发布：`main` 经 `.github/workflows/pages.yml` 验证后发布 `dist/` 到 GitHub Pages；`dist/` 不追踪。
 - 源码：`src/components/` 为 UI 构件，`src/lib/` 为存储、Markdown、搜索、备份等可测试核心逻辑，`public/` 为静态 PWA 资产。
+- 界面：中英双语；语言切换与反馈入口在顶栏右侧。用户主动填写的反馈经 `https://feedback.070315.site/feedback` 提交，只发送正文、产品名 `MarkGrove` 和界面语言；笔记、文件夹、修订和备份不得附加。CSP `connect-src` 仅为此放行该主机。
 
 <!-- AGENT-MAINTAINED:END facts -->
 

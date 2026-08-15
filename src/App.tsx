@@ -1,10 +1,11 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArchiveRestore, BookOpenText, Check, ChevronDown, ChevronRight, Clock3, Columns2, Download,
-  FileDown, FileUp, FolderOpen, FolderPlus, HardDrive, Languages, Menu, Moon,
+  FileDown, FileUp, FolderOpen, FolderPlus, HardDrive, Languages, Menu, MessageSquare, Moon,
   ListTree, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, RotateCcw,
   Search, Settings, Sun, Tag, Trash2, Upload, Wifi, WifiOff,
 } from "lucide-react";
+import { FeedbackDialog } from "./components/FeedbackDialog";
 import { LibraryOverview } from "./components/LibraryOverview";
 import { Modal } from "./components/Modal";
 import { MoveDialog } from "./components/MoveDialog";
@@ -66,6 +67,7 @@ export default function App() {
   const [persistent, setPersistent] = useState(false);
   const [lastBackup, setLastBackup] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [revisions, setRevisions] = useState<RevisionRecord[]>([]);
@@ -401,11 +403,16 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand-block"><span className="brand-mark"><BookOpenText size={20} /></span><div><strong>MarkGrove</strong><small>{language === "zh" ? "本地 Markdown 笔记本" : "Local Markdown notebook"}</small></div></div>
+        <div className="brand-block"><span className="brand-mark"><BookOpenText size={20} /></span><div><strong>MarkGrove</strong><small>{t("brandTagline")}</small></div></div>
         <div className="topbar-status">
           <span className={`save-state ${saveState}`}><Check size={14} />{t(saveState === "saving" ? "saving" : saveState === "failed" ? "saveFailed" : "saved")}</span>
           <span title={online ? t("online") : t("offline")}>{online ? <Wifi size={15} /> : <WifiOff size={15} />}</span>
-          <button type="button" className="icon-button" aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"} onClick={() => { setSidebarCollapsed(!sidebarCollapsed); void setSetting("sidebarCollapsed", !sidebarCollapsed); }}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button>
+          <button type="button" className="icon-button" aria-label={t(sidebarCollapsed ? "showSidebar" : "hideSidebar")} onClick={() => { setSidebarCollapsed(!sidebarCollapsed); void setSetting("sidebarCollapsed", !sidebarCollapsed); }}>{sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}</button>
+          <div className="lang-switch" role="group" aria-label={t("language")}>
+            <button type="button" className={language === "zh" ? "active" : undefined} aria-pressed={language === "zh"} onClick={() => void changeLanguage("zh")}>{t("langZh")}</button>
+            <button type="button" className={language === "en" ? "active" : undefined} aria-pressed={language === "en"} onClick={() => void changeLanguage("en")}>{t("langEn")}</button>
+          </div>
+          <button type="button" className="topbar-feedback" onClick={() => setFeedbackOpen(true)}><MessageSquare size={15} /><span>{t("feedback")}</span></button>
           <button type="button" className="icon-button" aria-label={t("settings")} onClick={() => setSettingsOpen(true)}><Settings size={18} /></button>
         </div>
       </header>
@@ -491,10 +498,11 @@ export default function App() {
       {toast && <div className="undo-toast" role="status"><span>{toast.message}</span>{toast.undo && <button type="button" onClick={() => { if (toast.undo) runUndo(toast.undo); }}>{t("undo")}</button>}<button type="button" aria-label={t("close")} onClick={() => setToast(null)}>×</button></div>}
       {quickOpen && <QuickOpenDialog notes={notes} folders={folders} language={language} onClose={() => setQuickOpen(false)} onOpenNote={(id) => void openNote(id)} onOpenFolder={(id) => void navigate({ kind: "folder", folderId: id })} />}
       {moveTarget && moveItemRecord && <MoveDialog kind={moveTarget.kind} id={moveTarget.id} name={"title" in moveItemRecord ? moveItemRecord.title : moveItemRecord.name} notes={notes} folders={folders} language={language} onClose={() => setMoveTarget(null)} onMove={(parentId, targetIndex) => { const target = moveTarget; setMoveTarget(null); void handleMove({ ...target, parentId, targetIndex }); }} />}
-      {renameTarget && <Modal title={t("rename")} closeLabel={t("close")} onClose={() => setRenameTarget(null)} footer={<><button type="button" onClick={() => setRenameTarget(null)}>{t("cancel")}</button><button type="button" className="primary" onClick={() => void confirmRename()}>{language === "zh" ? "保存" : "Save"}</button></>}><label className="rename-field"><span>{renameTarget.kind === "folder" ? t("folders") : t("newNote")}</span><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void confirmRename(); }} /></label></Modal>}
+      {renameTarget && <Modal title={t("rename")} closeLabel={t("close")} onClose={() => setRenameTarget(null)} footer={<><button type="button" onClick={() => setRenameTarget(null)}>{t("cancel")}</button><button type="button" className="primary" onClick={() => void confirmRename()}>{t("save")}</button></>}><label className="rename-field"><span>{renameTarget.kind === "folder" ? t("folders") : t("newNote")}</span><input autoFocus value={renameValue} onChange={(event) => setRenameValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void confirmRename(); }} /></label></Modal>}
+      {feedbackOpen && <FeedbackDialog language={language} onClose={() => setFeedbackOpen(false)} onSuccess={() => { setFeedbackOpen(false); showToast(t("feedbackSuccess")); }} />}
       {settingsOpen && <Modal title={t("settings")} closeLabel={t("close")} onClose={() => setSettingsOpen(false)}><div className="settings-grid">
         <section><h3><Languages size={17} />{t("language")}</h3><div className="segmented"><button type="button" className={language === "zh" ? "active" : ""} onClick={() => void changeLanguage("zh")}>中文</button><button type="button" className={language === "en" ? "active" : ""} onClick={() => void changeLanguage("en")}>English</button></div></section>
-        <section><h3>{theme === "light" ? <Sun size={17} /> : <Moon size={17} />}{t("theme")}</h3><div className="segmented"><button type="button" className={theme === "light" ? "active" : ""} onClick={() => void changeTheme("light")}><Sun size={15} />Light</button><button type="button" className={theme === "dark" ? "active" : ""} onClick={() => void changeTheme("dark")}><Moon size={15} />Dark</button></div></section>
+        <section><h3>{theme === "light" ? <Sun size={17} /> : <Moon size={17} />}{t("theme")}</h3><div className="segmented"><button type="button" className={theme === "light" ? "active" : ""} onClick={() => void changeTheme("light")}><Sun size={15} />{t("themeLight")}</button><button type="button" className={theme === "dark" ? "active" : ""} onClick={() => void changeTheme("dark")}><Moon size={15} />{t("themeDark")}</button></div></section>
         <section className="storage-setting"><h3><HardDrive size={17} />{t("storage")}</h3><p>{t(persistent ? "storagePersistent" : "storageBestEffort")}</p>{!persistent && <button type="button" onClick={() => void requestPersistentStorage().then(setPersistent)}>{t("requestPersistence")}</button>}<small>{lastBackup ? `${t("lastBackup")}: ${dateLabel(lastBackup, language)}` : t("backupNever")}</small></section>
       </div></Modal>}
       {historyOpen && <Modal title={t("history")} closeLabel={t("close")} onClose={() => setHistoryOpen(false)}><div className="revision-list">{revisions.length === 0 ? <p>{t("revisionsEmpty")}</p> : revisions.map((revision) => <article key={revision.id}><div><strong>{revision.title}</strong><small>{dateLabel(revision.savedAt, language)} · v{revision.revision}</small><p>{revision.content.slice(0, 140) || "Markdown"}</p></div><button type="button" onClick={() => void handleRestoreRevision(revision)}><RotateCcw size={14} />{t("restoreRevision")}</button></article>)}</div></Modal>}
